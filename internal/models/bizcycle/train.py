@@ -6,7 +6,7 @@ from composite_score import compute_composite_score
 from enhance_model import (
     to_wide_monthly,
     make_features,
-    train_xgb_multi_horizon,
+    train_hmm_multi_horizon,
     predict_and_explain,
 )
 import pandas as pd
@@ -108,7 +108,7 @@ X = X.loc[~X.index.duplicated()].sort_index()
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
 # 11. Train multi-horizon models
-pipelines, explainers = train_xgb_multi_horizon(X, df_targets)
+pipelines, explainers = train_hmm_multi_horizon(X, df_targets)
 
 
 # ---------------------------------------------

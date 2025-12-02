@@ -3,11 +3,10 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.model_selection import TimeSeriesSplit, GridSearchCV
-from sklearn.pipeline import Pipeline
-from xgboost import XGBClassifier
-import shap
 import os
+from hmmlearn.hmm import GaussianHMM
+
+
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
 def to_wide_monthly(df_long):
@@ -90,9 +89,54 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
 
     return X
 
-# ---- Train one model per horizon with time-aware CV & return trained model + scaler + label encoder ----
-def train_xgb_multi_horizon(df_features, df_targets, horizons=['cycle_1m','cycle_3m','cycle_6m'],
-                            model_dir="models", n_splits=5):
+# ---- Hidden Markov Model helpers ----
+def _build_state_label_map(model, labels, scaled_X):
+    """
+    Map each hidden state to the most frequent observed label in training.
+    """
+
+    states = model.predict(scaled_X)
+
+    mapping = {}
+    for state in np.unique(states):
+        mask = states == state
+        if mask.any():
+            mapping[state] = labels.reset_index(drop=True)[mask].value_counts().idxmax()
+    return mapping
+
+
+def _fit_hmm(X, y):
+    """Fit a Gaussian HMM with as many components as labels present."""
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+
+    n_states = max(len(np.unique(y)), 2)
+    model = GaussianHMM(
+        n_components=n_states,
+        covariance_type="full",
+        n_iter=500,
+        random_state=42,
+    )
+    model.fit(X_scaled)
+
+    state_label_map = _build_state_label_map(model, y, X_scaled)
+
+    label_encoder = LabelEncoder().fit(list(state_label_map.values()))
+
+    return {
+        "model": model,
+        "scaler": scaler,
+        "state_label_map": state_label_map,
+        "label_encoder": label_encoder,
+        "feature_order": list(X.columns),
+    }
+def train_hmm_multi_horizon(
+    df_features,
+    df_targets,
+    horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
+    model_dir="models",
+):
     """
     df_features: DataFrame indexed by month (features)
     df_targets: DataFrame with horizons columns aligned with df_features index
@@ -100,69 +144,26 @@ def train_xgb_multi_horizon(df_features, df_targets, horizons=['cycle_1m','cycle
     """
     os.makedirs(model_dir, exist_ok=True)
     pipelines = {}
-    explainers = {}
-
-    tss = TimeSeriesSplit(n_splits=n_splits)
 
     for h in horizons:
         y = df_targets[h].reindex(df_features.index).dropna()
         # align X to y
         X = df_features.reindex(y.index).copy()
 
-        # encode target classes to integers
-        le = LabelEncoder()
-        y_enc = le.fit_transform(y)
 
-        # pipeline: scaler -> XGB
-        pipe = Pipeline([
-            ('scaler', StandardScaler()),
-            ('clf', XGBClassifier(
-                objective='multi:softprob',
-                eval_metric='mlogloss',
-                random_state=42,
-                n_jobs=4
-            ))
-        ])
-
-        # small grid to avoid long runs — tune if you have time
-        param_grid = {
-            'clf__n_estimators': [100, 300],
-            'clf__max_depth': [3, 6],
-            'clf__learning_rate': [0.01, 0.1],
-        }
-
-        g = GridSearchCV(pipe, param_grid, cv=tss, scoring='accuracy', n_jobs=1, verbose=1)
-        g.fit(X, y_enc)
-
-        print(f"Best params for {h}: {g.best_params_}, best_score={g.best_score_:.3f}")
-
-        # save pipeline + label encoder
-        model_path = os.path.join(model_dir, f"pipeline_{h}.joblib")
-        le_path = os.path.join(model_dir, f"labelenc_{h}.joblib")
-        joblib.dump(g.best_estimator_, model_path)
-        joblib.dump(le, le_path)
-        pipelines[h] = (g.best_estimator_, le)
-
-        # SHAP explainer on a sample (explain the whole training set can be slow)
-        # We need raw model and scaled X to compute shap values; use scaled features
-        scaler = g.best_estimator_.named_steps['scaler']
-        clf = g.best_estimator_.named_steps['clf']
-        Xs = scaler.transform(X)
-        explainer = shap.TreeExplainer(clf)
-        shap_vals = explainer.shap_values(Xs)  # list per class
-        explainers[h] = (explainer, shap_vals, X.index, X.columns)
-
-        # save explainer (optional)
-        joblib.dump(explainer, os.path.join(model_dir, f"explainer_{h}.joblib"))
-
-    return pipelines, explainers
+        pipeline=_fit_hmm(X, y)
+     
+        model_path = os.path.join(model_dir, f"hmm_pipeline_{h}.joblib")
+        joblib.dump(pipeline, model_path)
+        pipelines[h] = pipeline
+    return pipelines, None
 
 # ---- Predict + explain function for a single latest row ----
-def _summarize_feature_impacts(feature_names, shap_values, top_n):
+def _summarize_feature_impacts(feature_names, state_means, top_n):
     """Return per-feature and aggregated indicator impacts."""
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(shap_values, index=feature_names)
+        pd.Series(state_means, index=feature_names)
         .abs()
         .sort_values(ascending=False)
     )
@@ -172,12 +173,12 @@ def _summarize_feature_impacts(feature_names, shap_values, top_n):
         idx = feature_names.tolist().index(feat)
         top_features.append({
             "feature": feat,
-            "impact": float(shap_values[idx]),
+            "impact": float(state_means[idx]),
         })
 
     # aggregate by base indicator name (strip lag/suffixes)
     base_impacts = {}
-    for feat, value in zip(feature_names, shap_values):
+    for feat, value in zip(feature_names, state_means):
         base = feat
         if "_lag" in base:
             base = base.split("_lag")[0]
@@ -193,59 +194,6 @@ def _summarize_feature_impacts(feature_names, shap_values, top_n):
     )[:top_n]
 
     return top_features, top_indicators
-def _extract_shap_for_prediction(explainer, scaled_X, raw_X, pred_idx):
-    """Handle SHAP APIs for a single-row prediction safely."""
-    shap_raw = explainer.shap_values(scaled_X)
-
-    # CASE A: List of arrays (old SHAP API, one per class)
-    if isinstance(shap_raw, list):
-        return shap_raw[pred_idx][0]   # shape (n_features,)
-
-    # CASE B: SHAP Explanation object (new SHAP API)
-    sv = explainer(raw_X)
-    # sv.values shape = (1, n_features, n_classes)
-    return sv.values[0][:, pred_idx]
-
-
-def _resolve_explainer(explainers, horizon, pipe):
-    """Return a cached explainer when available, else build a fresh TreeExplainer."""
-
-    if explainers and horizon in explainers:
-        entry = explainers[horizon]
-        # train_xgb_multi_horizon stores (explainer, shap_vals, index, cols)
-        if isinstance(entry, tuple) and len(entry) and hasattr(entry[0], "shap_values"):
-            return entry[0]
-        if hasattr(entry, "shap_values"):
-            return entry
-    return shap.TreeExplainer(pipe.named_steps["clf"])
-
-
-
-def _resolve_explainer(explainers, horizon, pipe):
-    """Return a cached explainer when available, else build a fresh TreeExplainer."""
-
-    if explainers and horizon in explainers:
-        entry = explainers[horizon]
-        # train_xgb_multi_horizon stores (explainer, shap_vals, index, cols)
-        if isinstance(entry, tuple) and len(entry) and hasattr(entry[0], "shap_values"):
-            return entry[0]
-        if hasattr(entry, "shap_values"):
-            return entry
-    return shap.TreeExplainer(pipe.named_steps["clf"])
-
-
-def _extract_shap_for_prediction(explainer, scaled_X, raw_X, pred_idx):
-    """Handle SHAP APIs for a single-row prediction safely."""
-    shap_raw = explainer.shap_values(scaled_X)
-
-    # CASE A: List of arrays (old SHAP API, one per class)
-    if isinstance(shap_raw, list):
-        return shap_raw[pred_idx][0]   # shape (n_features,)
-
-    # CASE B: SHAP Explanation object (new SHAP API)
-    sv = explainer(raw_X)
-    # sv.values shape = (1, n_features, n_classes)
-    return sv.values[0][:, pred_idx]
 
 
 def _select_prediction_row(X_all, as_of=None):
@@ -264,6 +212,18 @@ def _select_prediction_row(X_all, as_of=None):
         return X_all.loc[[monthly_ts]]
 
     raise KeyError(f"No feature row found for as_of={as_of}")
+def _compute_label_probabilities(state_probs, state_label_map):
+    label_probs = {}
+    for state, prob in enumerate(state_probs):
+        label = state_label_map.get(state)
+        if label is None:
+            continue
+        label_probs[label] = label_probs.get(label, 0.0) + float(prob)
+
+    total = sum(label_probs.values())
+    if total > 0:
+        label_probs = {k: v / total for k, v in label_probs.items()}
+    return label_probs
 def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None):
     """
     Produce predictions for each horizon with probabilities and top drivers.
@@ -286,41 +246,37 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         "as_of": latest_row.index[-1].isoformat()
     }
 
-    for horizon, (pipe, le) in pipelines.items():
+    for horizon, pipeline in pipelines.items():
 
         # ---------------------------------------------------------
         # 1. Get expected feature order from scaler
-        # ---------------------------------------------------------
-        expected_cols = pipe.named_steps["scaler"].feature_names_in_
+        # ---------------------
+        model = pipeline["model"]
+        scaler = pipeline["scaler"]
+        state_label_map = pipeline["state_label_map"]
+        label_encoder = pipeline["label_encoder"]
+        expected_cols = pipeline["feature_order"]
 
         # Reindex latest_row to match training order
         X = latest_row.reindex(columns=expected_cols)
         X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
-        # ---------------------------------------------------------
-        # 2. Predict probabilities and class label
-        # ---------------------------------------------------------
-        probs = pipe.predict_proba(X)[0]
-        pred_idx = int(np.argmax(probs))
-        pred_label = le.inverse_transform([pred_idx])[0]
-
-        prob_dict = dict(
-            zip(le.inverse_transform(range(len(probs))), map(float, probs))
-        )
-
-        # ---------------------------------------------------------
-        # 3. SHAP explanation (reuse cached explainer when provided)
-        # ---------------------------------------------------------
-        explainer = _resolve_explainer(explainers, horizon, pipe)
-        scaled = pipe.named_steps["scaler"].transform(X)
-
-        class_shap = _extract_shap_for_prediction(explainer, scaled, X, pred_idx)
-
+      
+        scaled = scaler.transform(X)
+        logprob, state_probs = model.score_samples(scaled)
+        state_probs = state_probs[0]
+        pred_state = int(np.argmax(state_probs))
+        pred_label = state_label_map.get(pred_state, label_encoder.classes_[0])
+        label_probs = _compute_label_probabilities(state_probs, state_label_map)
+        # ensure labels appear in encoder order for consistent output
+        prob_dict = {label: float(label_probs.get(label, 0.0)) for label in label_encoder.classes_}
         # ---------------------------------------------------------
         # 4. Summaries
         # ---------------------------------------------------------
+        state_means = model.means_[pred_state]
+        
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols, class_shap, top_n
+            expected_cols,state_means, top_n
         )
 
         results[horizon] = {

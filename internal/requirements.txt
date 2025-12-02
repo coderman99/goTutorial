@@ -10,3 +10,4 @@ xgboost
 shap
 python-dotenv
 dotenv
+hmmlearn
