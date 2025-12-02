@@ -50,9 +50,19 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     returns: X (features DF)
     """
     X = wide.copy()
+        # Remove or coerce non-numeric columns before creating percentage changes
+    for col in list(X.columns):
+        if not pd.api.types.is_numeric_dtype(X[col]):
+            coerced = pd.to_numeric(X[col], errors="coerce")
+            if coerced.notna().any():
+                X[col] = coerced
+            else:
+                X = X.drop(columns=col)
+
     # percent changes for level indicators can help
     # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
-    for col in X.columns:
+    numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
+    for col in numeric_cols:        
         X[f"{col}_pct"] = X[col].pct_change()
 
     # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
@@ -183,6 +193,32 @@ def _summarize_feature_impacts(feature_names, shap_values, top_n):
     )[:top_n]
 
     return top_features, top_indicators
+def _extract_shap_for_prediction(explainer, scaled_X, raw_X, pred_idx):
+    """Handle SHAP APIs for a single-row prediction safely."""
+    shap_raw = explainer.shap_values(scaled_X)
+
+    # CASE A: List of arrays (old SHAP API, one per class)
+    if isinstance(shap_raw, list):
+        return shap_raw[pred_idx][0]   # shape (n_features,)
+
+    # CASE B: SHAP Explanation object (new SHAP API)
+    sv = explainer(raw_X)
+    # sv.values shape = (1, n_features, n_classes)
+    return sv.values[0][:, pred_idx]
+
+
+def _resolve_explainer(explainers, horizon, pipe):
+    """Return a cached explainer when available, else build a fresh TreeExplainer."""
+
+    if explainers and horizon in explainers:
+        entry = explainers[horizon]
+        # train_xgb_multi_horizon stores (explainer, shap_vals, index, cols)
+        if isinstance(entry, tuple) and len(entry) and hasattr(entry[0], "shap_values"):
+            return entry[0]
+        if hasattr(entry, "shap_values"):
+            return entry
+    return shap.TreeExplainer(pipe.named_steps["clf"])
+
 
 
 def _resolve_explainer(explainers, horizon, pipe):
@@ -228,8 +264,6 @@ def _select_prediction_row(X_all, as_of=None):
         return X_all.loc[[monthly_ts]]
 
     raise KeyError(f"No feature row found for as_of={as_of}")
-
-
 def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None):
     """
     Produce predictions for each horizon with probabilities and top drivers.
