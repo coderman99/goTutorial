@@ -27,9 +27,9 @@ def preprocess_monthly(df):
 
     category_map = {
         "Leading": 1,
-        "Coincident": 2,
-        "Coincidental": 2,
-        "Lagging": 3
+        "Lagging": 2,
+        "Coincident": 3,
+        "Coincidental": 3
         
     }
     monthly["indicator_cat_code"] = (

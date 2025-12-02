@@ -39,7 +39,7 @@ def load_sp500_from_db():
     spx = spx.sort_values("timestamp")
 
     # Convert daily → month-end (your previous code)
-    spx = spx.set_index("timestamp").resample("ME").last()
+    spx = spx.set_index("timestamp").resample("M").last()
 
     spx = spx.rename(columns={"value": "sp500"})
     return spx[["sp500"]]

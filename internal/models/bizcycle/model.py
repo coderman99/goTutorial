@@ -37,7 +37,6 @@ def make_features(wide_df):
     return X, y_dict
 
 
-
 def prepare_features(df):
     """
     Remove non-numeric columns and prepare X, y.

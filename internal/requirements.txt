@@ -8,3 +8,5 @@ matplotlib
 seaborn
 xgboost
 shap
+python-dotenv
+dotenv

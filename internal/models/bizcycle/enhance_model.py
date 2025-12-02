@@ -28,7 +28,7 @@ def to_wide_monthly(df_long):
     if df.index.dtype != "datetime64[ns]":
         df.index = pd.to_datetime(df.index)
 
-    df.index = df.index.to_period("M").to_timestamp()
+    df.index = df.index.to_period("M").to_timestamp("M")
 
     # Pivot to wide
     wide = df.pivot_table(
@@ -223,7 +223,7 @@ def _select_prediction_row(X_all, as_of=None):
         return X_all.loc[[ts]]
 
     # Allow monthly string such as "2024-03" that may map to end-of-month index
-    monthly_ts = ts.to_period("M").to_timestamp()
+    monthly_ts = ts.to_period("M").to_timestamp("M")
     if monthly_ts in X_all.index:
         return X_all.loc[[monthly_ts]]
 
