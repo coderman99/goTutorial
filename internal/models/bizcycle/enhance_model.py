@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, LabelEncoder
 import os
-from hmmlearn.hmm import GaussianHMM
-
+from lightgbm import LGBMClassifier
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -161,16 +160,17 @@ def train_hmm_multi_horizon(
 # ---- Predict + explain function for a single latest row ----
 def _summarize_feature_impacts(feature_names, state_means, top_n):
     """Return per-feature and aggregated indicator impacts."""
+    feature_list = list(feature_names)
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(state_means, index=feature_names)
+        pd.Series(state_means, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
 
     top_features = []
     for feat in impact_series.head(top_n).index:
-        idx = feature_names.tolist().index(feat)
+        idx = feature_list.index(feat)
         top_features.append({
             "feature": feat,
             "impact": float(state_means[idx]),
@@ -178,7 +178,7 @@ def _summarize_feature_impacts(feature_names, state_means, top_n):
 
     # aggregate by base indicator name (strip lag/suffixes)
     base_impacts = {}
-    for feat, value in zip(feature_names, state_means):
+    for feat, value in zip(feature_list, state_means):
         base = feat
         if "_lag" in base:
             base = base.split("_lag")[0]
