@@ -1,152 +1,255 @@
 <h1>Model Debug Report</h1><h2>Prediction Output</h2><pre>{
+    "as_of": "2025-11-30T00:00:00",
     "cycle_1m": {
-        "probs": {
-            "Contraction": 0.14093685150146484,
-            "Expansion": 0.4544680714607239,
-            "Peak": 0.4045950472354889
+        "predicted_phase": "Expansion",
+        "probabilities": {
+            "Expansion": 0.4589478373527527,
+            "Contraction": 0.27289921045303345,
+            "Peak": 0.26815295219421387
         },
-        "pred": "Expansion",
         "top_features": [
-            [
-                "GDPGrowthRate",
-                0.08922070264816284
-            ],
-            [
-                "HousingStarts_pct_lag1_lag6",
-                0.07741390913724899
-            ],
-            [
-                "ConsumerConfidenceIndex_pct_lag1_lag3",
-                0.03239855915307999
-            ],
-            [
-                "M2MoneySupply_lag1_lag6",
-                -0.027083568274974823
-            ],
-            [
-                "ConsumerConfidenceIndex_pct",
-                0.026596039533615112
-            ],
-            [
-                "YieldCurve_pct_lag6",
-                0.02407991699874401
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag6",
-                0.023588964715600014
-            ],
-            [
-                "IndustrialProduction_lag3",
-                -0.01683141104876995
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag1_lag3",
-                0.016260677948594093
-            ],
-            [
-                "YieldCurve_pct",
-                0.01568922959268093
-            ]
+            {
+                "feature": "YieldCurve_pct_lag1_lag3",
+                "impact": -0.21609622240066528
+            },
+            {
+                "feature": "YieldCurve_lag3_lag6",
+                "impact": -0.06456656754016876
+            },
+            {
+                "feature": "returns_pct_lag3",
+                "impact": -0.022565769031643867
+            },
+            {
+                "feature": "YieldCurve_pct_lag3_lag6",
+                "impact": 0.018987905234098434
+            },
+            {
+                "feature": "returns_lag1_lag6",
+                "impact": -0.01635177806019783
+            },
+            {
+                "feature": "returns_pct_lag6",
+                "impact": 0.00922755803912878
+            },
+            {
+                "feature": "returns_lag3",
+                "impact": 0.008361326530575752
+            },
+            {
+                "feature": "YieldCurve_pct_lag1",
+                "impact": 0.007044026628136635
+            },
+            {
+                "feature": "returns_pct_lag1",
+                "impact": -0.006989640183746815
+            },
+            {
+                "feature": "YieldCurve_pct",
+                "impact": 0.004565066192299128
+            },
+            {
+                "feature": "returns_lag1_lag3",
+                "impact": 0.0037385905161499977
+            },
+            {
+                "feature": "YieldCurve_pct_lag1_lag3_lag6",
+                "impact": -0.0020853294990956783
+            }
+        ],
+        "most_impactful_indicators": [
+            {
+                "indicator": "YieldCurve",
+                "aggregate_impact": 0.3133451174944639
+            },
+            {
+                "indicator": "returns",
+                "aggregate_impact": 0.06723466236144304
+            },
+            {
+                "indicator": "composite_cycle_1m",
+                "aggregate_impact": 0.0
+            },
+            {
+                "indicator": "composite_cycle_3m",
+                "aggregate_impact": 0.0
+            },
+            {
+                "indicator": "composite_cycle_6m",
+                "aggregate_impact": 0.0
+            },
+            {
+                "indicator": "YieldCurve_catcode",
+                "aggregate_impact": 0.0
+            }
         ]
     },
     "cycle_3m": {
-        "probs": {
-            "Contraction": 0.14093685150146484,
-            "Expansion": 0.4544680714607239,
-            "Peak": 0.4045950472354889
+        "predicted_phase": "Expansion",
+        "probabilities": {
+            "Expansion": 0.8301780223846436,
+            "Contraction": 0.11446821689605713,
+            "Peak": 0.055353712290525436
         },
-        "pred": "Expansion",
         "top_features": [
-            [
-                "GDPGrowthRate",
-                0.08922070264816284
-            ],
-            [
-                "HousingStarts_pct_lag1_lag6",
-                0.07741390913724899
-            ],
-            [
-                "ConsumerConfidenceIndex_pct_lag1_lag3",
-                0.03239855915307999
-            ],
-            [
-                "M2MoneySupply_lag1_lag6",
-                -0.027083568274974823
-            ],
-            [
-                "ConsumerConfidenceIndex_pct",
-                0.026596039533615112
-            ],
-            [
-                "YieldCurve_pct_lag6",
-                0.02407991699874401
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag6",
-                0.023588964715600014
-            ],
-            [
-                "IndustrialProduction_lag3",
-                -0.01683141104876995
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag1_lag3",
-                0.016260677948594093
-            ],
-            [
-                "YieldCurve_pct",
-                0.01568922959268093
-            ]
+            {
+                "feature": "returns_pct_lag3_lag6",
+                "impact": -1.1733145713806152
+            },
+            {
+                "feature": "returns_pct_lag1_lag3_lag6",
+                "impact": 0.7132387161254883
+            },
+            {
+                "feature": "returns_pct_lag1_lag6",
+                "impact": -0.6184961795806885
+            },
+            {
+                "feature": "returns_pct",
+                "impact": 0.4983837604522705
+            },
+            {
+                "feature": "YieldCurve_pct_lag1_lag3_lag6",
+                "impact": 0.3118772804737091
+            },
+            {
+                "feature": "YieldCurve_lag1_lag6",
+                "impact": -0.24907304346561432
+            },
+            {
+                "feature": "YieldCurve_pct_lag3",
+                "impact": -0.24550697207450867
+            },
+            {
+                "feature": "returns_lag1",
+                "impact": -0.22440722584724426
+            },
+            {
+                "feature": "returns_lag3_lag6",
+                "impact": -0.2147911638021469
+            },
+            {
+                "feature": "YieldCurve_pct_lag1_lag6",
+                "impact": -0.2088063806295395
+            },
+            {
+                "feature": "composite_cycle_1m_pct_lag1_lag6",
+                "impact": -0.17356278002262115
+            },
+            {
+                "feature": "YieldCurve_pct_lag3_lag6",
+                "impact": -0.13314922153949738
+            }
+        ],
+        "most_impactful_indicators": [
+            {
+                "indicator": "returns",
+                "aggregate_impact": 3.747611458413303
+            },
+            {
+                "indicator": "YieldCurve",
+                "aggregate_impact": 1.495159565238282
+            },
+            {
+                "indicator": "composite_cycle_1m",
+                "aggregate_impact": 0.5040233936160803
+            },
+            {
+                "indicator": "composite_cycle_6m",
+                "aggregate_impact": 0.08379401883576065
+            },
+            {
+                "indicator": "composite_cycle_3m",
+                "aggregate_impact": 0.06964781787246466
+            },
+            {
+                "indicator": "YieldCurve_catcode",
+                "aggregate_impact": 0.0
+            }
         ]
     },
     "cycle_6m": {
-        "probs": {
-            "Contraction": 0.14093685150146484,
-            "Expansion": 0.4544680714607239,
-            "Peak": 0.4045950472354889
+        "predicted_phase": "Peak",
+        "probabilities": {
+            "Peak": 0.6934533715248108,
+            "Contraction": 0.2105131894350052,
+            "Expansion": 0.09603343158960342
         },
-        "pred": "Expansion",
         "top_features": [
-            [
-                "GDPGrowthRate",
-                0.08922070264816284
-            ],
-            [
-                "HousingStarts_pct_lag1_lag6",
-                0.07741390913724899
-            ],
-            [
-                "ConsumerConfidenceIndex_pct_lag1_lag3",
-                0.03239855915307999
-            ],
-            [
-                "M2MoneySupply_lag1_lag6",
-                -0.027083568274974823
-            ],
-            [
-                "ConsumerConfidenceIndex_pct",
-                0.026596039533615112
-            ],
-            [
-                "YieldCurve_pct_lag6",
-                0.02407991699874401
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag6",
-                0.023588964715600014
-            ],
-            [
-                "IndustrialProduction_lag3",
-                -0.01683141104876995
-            ],
-            [
-                "NonAgriculturalEmployment_pct_lag1_lag3",
-                0.016260677948594093
-            ],
-            [
-                "YieldCurve_pct",
-                0.01568922959268093
-            ]
+            {
+                "feature": "returns_pct_lag6",
+                "impact": 1.6633046865463257
+            },
+            {
+                "feature": "composite_cycle_6m_pct_lag6",
+                "impact": 0.5194609761238098
+            },
+            {
+                "feature": "returns_lag1_lag3",
+                "impact": 0.49397924542427063
+            },
+            {
+                "feature": "YieldCurve_pct_lag1_lag6",
+                "impact": -0.43579745292663574
+            },
+            {
+                "feature": "composite_cycle_1m_pct_lag6",
+                "impact": 0.29067376255989075
+            },
+            {
+                "feature": "returns_pct_lag1",
+                "impact": -0.284596711397171
+            },
+            {
+                "feature": "YieldCurve_pct_lag1",
+                "impact": -0.25739139318466187
+            },
+            {
+                "feature": "YieldCurve_pct_lag3",
+                "impact": 0.22239184379577637
+            },
+            {
+                "feature": "returns_pct_lag1_lag6",
+                "impact": -0.2223263680934906
+            },
+            {
+                "feature": "returns_lag1_lag3_lag6",
+                "impact": 0.18822436034679413
+            },
+            {
+                "feature": "YieldCurve",
+                "impact": 0.17914357781410217
+            },
+            {
+                "feature": "returns_pct",
+                "impact": 0.14930568635463715
+            }
+        ],
+        "most_impactful_indicators": [
+            {
+                "indicator": "returns",
+                "aggregate_impact": 3.586654163664207
+            },
+            {
+                "indicator": "YieldCurve",
+                "aggregate_impact": 1.6386658302508295
+            },
+            {
+                "indicator": "composite_cycle_6m",
+                "aggregate_impact": 0.5962087940424681
+            },
+            {
+                "indicator": "composite_cycle_1m",
+                "aggregate_impact": 0.5802708524279296
+            },
+            {
+                "indicator": "composite_cycle_3m",
+                "aggregate_impact": 0.0
+            },
+            {
+                "indicator": "YieldCurve_catcode",
+                "aggregate_impact": 0.0
+            }
         ]
     }
 }</pre>
