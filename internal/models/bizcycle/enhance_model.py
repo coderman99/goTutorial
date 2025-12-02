@@ -128,18 +128,26 @@ def train_lightgbm_multi_horizon(
     """
     os.makedirs(model_dir, exist_ok=True)
     pipelines = {}
-
+    accuracies = {}
     for h in horizons:
         y = df_targets[h].reindex(df_features.index).dropna()
         # align X to y
         X = df_features.reindex(y.index).copy()
-# ---- Predict + explain function for a single latest row ----
+              # If no labels are available for this horizon, skip but keep an explicit
+        # None entry so downstream code can guard against missing accuracies.
+        if y.empty:
+            pipelines[h] = None
+            accuracies[h] = None
+            continue
+
         pipeline = _fit_lgbm(X, y)
+# ---- Predict + explain function for a single latest row ----
 
         model_path = os.path.join(model_dir, f"lgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
-    return pipelines, None
+        accuracies[h] = pipeline["train_accuracy"]
+        return pipelines, accuracies
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
