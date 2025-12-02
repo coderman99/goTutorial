@@ -6,7 +6,7 @@ from composite_score import compute_composite_score
 from enhance_model import (
     to_wide_monthly,
     make_features,
-    train_hmm_multi_horizon,
+    train_lightgbm_multi_horizon,
     predict_and_explain,
 )
 import pandas as pd
@@ -108,8 +108,11 @@ X = X.loc[~X.index.duplicated()].sort_index()
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
 # 11. Train multi-horizon models
-pipelines, explainers = train_hmm_multi_horizon(X, df_targets)
+pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
 
+print("\nTraining accuracy by horizon:")
+for horizon, acc in accuracies.items():
+    print(f"  {horizon}: {acc:.3f}")
 
 # ---------------------------------------------
 # 12. Make prediction on the latest data & explain it
@@ -119,7 +122,7 @@ print("   MODEL PREDICTION ")
 print("====================")
 
 # Generate probabilities + top indicators for each horizon (reuse explainers to keep feature ordering aligned)
-latest_prediction = predict_and_explain(pipelines, X, top_n=12, explainers=explainers)
+latest_prediction = predict_and_explain(pipelines, X, top_n=12)
 
 print("\n\nFinal Prediction Output:")
 print(latest_prediction)

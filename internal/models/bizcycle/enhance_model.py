@@ -2,7 +2,8 @@
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
 import os
 from lightgbm import LGBMClassifier
 
@@ -88,49 +89,33 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
 
     return X
 
-# ---- Hidden Markov Model helpers ----
-def _build_state_label_map(model, labels, scaled_X):
-    """
-    Map each hidden state to the most frequent observed label in training.
-    """
+# ---- LightGBM helpers ----
+def _fit_lgbm(X, y):
+    """Fit a LightGBM classifier and store metadata for inference."""
 
-    states = model.predict(scaled_X)
+    # Ensure no missing values during training
+    X_filled = X.ffill().bfill()
 
-    mapping = {}
-    for state in np.unique(states):
-        mask = states == state
-        if mask.any():
-            mapping[state] = labels.reset_index(drop=True)[mask].value_counts().idxmax()
-    return mapping
-
-
-def _fit_hmm(X, y):
-    """Fit a Gaussian HMM with as many components as labels present."""
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    n_states = max(len(np.unique(y)), 2)
-    model = GaussianHMM(
-        n_components=n_states,
-        covariance_type="full",
-        n_iter=500,
+    label_encoder = LabelEncoder().fit(y)
+    y_encoded = label_encoder.transform(y)
+    model = LGBMClassifier(
+        n_estimators=500,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        objective="multiclass",
         random_state=42,
     )
-    model.fit(X_scaled)
-
-    state_label_map = _build_state_label_map(model, y, X_scaled)
-
-    label_encoder = LabelEncoder().fit(list(state_label_map.values()))
-
+    model.fit(X_filled, y_encoded)
+    y_pred_encoded = model.predict(X_filled)
+    train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
     return {
         "model": model,
-        "scaler": scaler,
-        "state_label_map": state_label_map,
         "label_encoder": label_encoder,
         "feature_order": list(X.columns),
+        "train_accuracy": float(train_accuracy),
     }
-def train_hmm_multi_horizon(
+def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -148,37 +133,31 @@ def train_hmm_multi_horizon(
         y = df_targets[h].reindex(df_features.index).dropna()
         # align X to y
         X = df_features.reindex(y.index).copy()
+# ---- Predict + explain function for a single latest row ----
+        pipeline = _fit_lgbm(X, y)
 
-
-        pipeline=_fit_hmm(X, y)
-     
-        model_path = os.path.join(model_dir, f"hmm_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
     return pipelines, None
-
-# ---- Predict + explain function for a single latest row ----
-def _summarize_feature_impacts(feature_names, state_means, top_n):
+def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(state_means, index=feature_list)
+        pd.Series(importances, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
+    top_features = [
+        {"feature": feat, "impact": float(impact_series.loc[feat])}
+        for feat in impact_series.head(top_n).index
+    ]
 
-    top_features = []
-    for feat in impact_series.head(top_n).index:
-        idx = feature_list.index(feat)
-        top_features.append({
-            "feature": feat,
-            "impact": float(state_means[idx]),
-        })
-
+    
     # aggregate by base indicator name (strip lag/suffixes)
     base_impacts = {}
-    for feat, value in zip(feature_list, state_means):
+    for feat, value in zip(feature_list, importances):
         base = feat
         if "_lag" in base:
             base = base.split("_lag")[0]
@@ -212,18 +191,7 @@ def _select_prediction_row(X_all, as_of=None):
         return X_all.loc[[monthly_ts]]
 
     raise KeyError(f"No feature row found for as_of={as_of}")
-def _compute_label_probabilities(state_probs, state_label_map):
-    label_probs = {}
-    for state, prob in enumerate(state_probs):
-        label = state_label_map.get(state)
-        if label is None:
-            continue
-        label_probs[label] = label_probs.get(label, 0.0) + float(prob)
 
-    total = sum(label_probs.values())
-    if total > 0:
-        label_probs = {k: v / total for k, v in label_probs.items()}
-    return label_probs
 def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None):
     """
     Produce predictions for each horizon with probabilities and top drivers.
@@ -252,8 +220,7 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         # 1. Get expected feature order from scaler
         # ---------------------
         model = pipeline["model"]
-        scaler = pipeline["scaler"]
-        state_label_map = pipeline["state_label_map"]
+ 
         label_encoder = pipeline["label_encoder"]
         expected_cols = pipeline["feature_order"]
 
@@ -261,22 +228,17 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         X = latest_row.reindex(columns=expected_cols)
         X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
-      
-        scaled = scaler.transform(X)
-        logprob, state_probs = model.score_samples(scaled)
-        state_probs = state_probs[0]
-        pred_state = int(np.argmax(state_probs))
-        pred_label = state_label_map.get(pred_state, label_encoder.classes_[0])
-        label_probs = _compute_label_probabilities(state_probs, state_label_map)
-        # ensure labels appear in encoder order for consistent output
-        prob_dict = {label: float(label_probs.get(label, 0.0)) for label in label_encoder.classes_}
-        # ---------------------------------------------------------
-        # 4. Summaries
-        # ---------------------------------------------------------
-        state_means = model.means_[pred_state]
+        proba = model.predict_proba(X)[0]
+        pred_idx = int(np.argmax(proba))
+        pred_label = label_encoder.inverse_transform([pred_idx])[0]
+
+        prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
+
+        feature_importances = model.feature_importances_
+
         
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols,state_means, top_n
+            expected_cols,feature_importances, top_n
         )
 
         results[horizon] = {
