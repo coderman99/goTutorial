@@ -9,7 +9,6 @@ from xgboost import XGBClassifier
 import shap
 import os
 
-
 # ---- Helper: wide conversion if you still have long-format monthly data ----
 def to_wide_monthly(df_long):
     """
@@ -149,14 +148,109 @@ def train_xgb_multi_horizon(df_features, df_targets, horizons=['cycle_1m','cycle
     return pipelines, explainers
 
 # ---- Predict + explain function for a single latest row ----
-def predict_and_explain(pipelines, X_all, top_n=10):
+def _summarize_feature_impacts(feature_names, shap_values, top_n):
+    """Return per-feature and aggregated indicator impacts."""
+    # absolute magnitude for ranking
+    impact_series = (
+        pd.Series(shap_values, index=feature_names)
+        .abs()
+        .sort_values(ascending=False)
+    )
+
+    top_features = []
+    for feat in impact_series.head(top_n).index:
+        idx = feature_names.tolist().index(feat)
+        top_features.append({
+            "feature": feat,
+            "impact": float(shap_values[idx]),
+        })
+
+    # aggregate by base indicator name (strip lag/suffixes)
+    base_impacts = {}
+    for feat, value in zip(feature_names, shap_values):
+        base = feat
+        if "_lag" in base:
+            base = base.split("_lag")[0]
+        if base.endswith("_pct"):
+            base = base.replace("_pct", "")
+        base_impacts.setdefault(base, 0.0)
+        base_impacts[base] += abs(float(value))
+
+    top_indicators = sorted(
+        ({"indicator": k, "aggregate_impact": v} for k, v in base_impacts.items()),
+        key=lambda x: x["aggregate_impact"],
+        reverse=True,
+    )[:top_n]
+
+    return top_features, top_indicators
+
+
+def _resolve_explainer(explainers, horizon, pipe):
+    """Return a cached explainer when available, else build a fresh TreeExplainer."""
+
+    if explainers and horizon in explainers:
+        entry = explainers[horizon]
+        # train_xgb_multi_horizon stores (explainer, shap_vals, index, cols)
+        if isinstance(entry, tuple) and len(entry) and hasattr(entry[0], "shap_values"):
+            return entry[0]
+        if hasattr(entry, "shap_values"):
+            return entry
+    return shap.TreeExplainer(pipe.named_steps["clf"])
+
+
+def _extract_shap_for_prediction(explainer, scaled_X, raw_X, pred_idx):
+    """Handle SHAP APIs for a single-row prediction safely."""
+    shap_raw = explainer.shap_values(scaled_X)
+
+    # CASE A: List of arrays (old SHAP API, one per class)
+    if isinstance(shap_raw, list):
+        return shap_raw[pred_idx][0]   # shape (n_features,)
+
+    # CASE B: SHAP Explanation object (new SHAP API)
+    sv = explainer(raw_X)
+    # sv.values shape = (1, n_features, n_classes)
+    return sv.values[0][:, pred_idx]
+
+
+def _select_prediction_row(X_all, as_of=None):
+    """Return a single-row DataFrame for the requested timestamp (or latest)."""
+
+    if as_of is None:
+        return X_all.iloc[[-1]]
+
+    ts = pd.to_datetime(as_of)
+    if ts in X_all.index:
+        return X_all.loc[[ts]]
+
+    # Allow monthly string such as "2024-03" that may map to end-of-month index
+    monthly_ts = ts.to_period("M").to_timestamp()
+    if monthly_ts in X_all.index:
+        return X_all.loc[[monthly_ts]]
+
+    raise KeyError(f"No feature row found for as_of={as_of}")
+
+
+def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None):
     """
-    pipelines : dict of {horizon: (pipeline, label_encoder)}
-    X_all     : full feature matrix used in training (must contain all engineered features)
+    Produce predictions for each horizon with probabilities and top drivers.
+
+    Parameters
+    ----------
+    pipelines : dict
+        Mapping of horizon → (trained pipeline, label encoder).
+    X_all : DataFrame
+        Full feature matrix used in training (must contain engineered columns).
+    top_n : int
+        Number of top features/indicators to include per horizon.
+    explainers : dict, optional
+        Optional mapping of horizon → explainer tuple from training to avoid
+        rebuilding explainers during inference.
     """
 
-    latest_row = X_all.iloc[[-1]]       # (1 x n_features)
-    results = {}
+    latest_row = _select_prediction_row(X_all, as_of)       # (1 x n_features)
+    results = {
+        "as_of": latest_row.index[-1].isoformat()
+    }
 
     for horizon, (pipe, le) in pipelines.items():
 
@@ -167,6 +261,7 @@ def predict_and_explain(pipelines, X_all, top_n=10):
 
         # Reindex latest_row to match training order
         X = latest_row.reindex(columns=expected_cols)
+        X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
         # ---------------------------------------------------------
         # 2. Predict probabilities and class label
@@ -175,42 +270,30 @@ def predict_and_explain(pipelines, X_all, top_n=10):
         pred_idx = int(np.argmax(probs))
         pred_label = le.inverse_transform([pred_idx])[0]
 
-        # ---------------------------------------------------------
-        # 3. SHAP explanation
-        # ---------------------------------------------------------
-        explainer = shap.TreeExplainer(pipe.named_steps["clf"])
-        scaled = pipe.named_steps["scaler"].transform(X)
-
-        shap_raw = explainer.shap_values(scaled)
-
-        # CASE A: List of arrays (old SHAP API, one per class)
-        if isinstance(shap_raw, list):
-            class_shap = shap_raw[pred_idx][0]   # shape (n_features,)
-
-        # CASE B: SHAP Explanation object (new SHAP API)
-        else:
-            sv = explainer(X)
-            # sv.values shape = (1, n_features, n_classes)
-            class_shap = sv.values[0][:, pred_idx]
-
-        # ---------------------------------------------------------
-        # 4. Get top contributing features
-        # ---------------------------------------------------------
-        s = (
-            pd.Series(class_shap, index=expected_cols)
-              .abs()
-              .sort_values(ascending=False)
+        prob_dict = dict(
+            zip(le.inverse_transform(range(len(probs))), map(float, probs))
         )
 
-        top_list = [
-            (feat, float(class_shap[expected_cols.tolist().index(feat)]))
-            for feat in s.head(top_n).index
-        ]
+        # ---------------------------------------------------------
+        # 3. SHAP explanation (reuse cached explainer when provided)
+        # ---------------------------------------------------------
+        explainer = _resolve_explainer(explainers, horizon, pipe)
+        scaled = pipe.named_steps["scaler"].transform(X)
+
+        class_shap = _extract_shap_for_prediction(explainer, scaled, X, pred_idx)
+
+        # ---------------------------------------------------------
+        # 4. Summaries
+        # ---------------------------------------------------------
+        top_features, top_indicators = _summarize_feature_impacts(
+            expected_cols, class_shap, top_n
+        )
 
         results[horizon] = {
-            "probs": dict(zip(le.inverse_transform(range(len(probs))), map(float, probs))),
-            "pred": pred_label,
-            "top_features": top_list
+            "predicted_phase": pred_label,
+            "probabilities": dict(sorted(prob_dict.items(), key=lambda kv: kv[1], reverse=True)),
+            "top_features": top_features,
+            "most_impactful_indicators": top_indicators,
         }
 
     return results

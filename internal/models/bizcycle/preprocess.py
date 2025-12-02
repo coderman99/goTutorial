@@ -25,6 +25,20 @@ def preprocess_monthly(df):
         "id": "first"
     }).reset_index()
 
+    category_map = {
+        "Leading": 1,
+        "Coincident": 2,
+        "Coincidental": 2,
+        "Lagging": 3
+        
+    }
+    monthly["indicator_cat_code"] = (
+        monthly["indicator_cat"]
+        .map(category_map)
+        .fillna(0)
+        .astype(int)
+    )
+
     # reindex to timestamp
     monthly = monthly.set_index("timestamp")
 

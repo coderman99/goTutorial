@@ -1,7 +1,7 @@
 from db_loader import load_indicator_data, load_sp500_from_db
 from preprocess import preprocess_monthly
 from labelling import label_business_cycle
-from model import create_future_targets, make_features
+from model import create_future_targets
 from composite_score import compute_composite_score
 from enhance_model import (
     to_wide_monthly,
@@ -71,29 +71,55 @@ print(labeled_df.head())
 # ---------------------------------------------
 # 7. Convert into WIDE format for ML
 # ---------------------------------------------
-# 7. Convert long → wide so each indicator is a column
-wide_df = labeled_df.copy()
-wide_df = wide_df[~wide_df.index.duplicated(keep='first')]
+# Build a single row per month for indicator values and metadata
+indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]])
+indicator_cat_wide = labeled_df.pivot_table(
+    index=labeled_df.index.to_period("M").to_timestamp("M"),
+    columns="name",
+    values="indicator_cat_code",
+    aggfunc="first",
+).add_suffix("_catcode")
 
-# 8. Build model-ready features
-X = make_features(wide_df)
-X = X.loc[~X.index.duplicated()]
-# 9. Build targets aligned with X
-labeled_df = labeled_df.loc[~labeled_df.index.duplicated()]
-df_targets = labeled_df[["cycle_1m","cycle_3m","cycle_6m"]].reindex(X.index)
+metadata_cols = [
+    c for c in labeled_df.columns
+    if c not in {"name", "value", "indicator_cat", "indicator_cat_code", "id"}
+]
+metadata = labeled_df[metadata_cols].groupby(labeled_df.index).first()
 
-# 10. Train multi-horizon models
+wide_df = metadata.join(indicator_value_wide, how="inner")
+wide_df = wide_df.join(indicator_cat_wide, how="left")
+wide_df = wide_df.loc[~wide_df.index.duplicated()].sort_index()
+
+# 8. Compute composite scores for each horizon using the wide feature set
+for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
+    wide_df, weights = compute_composite_score(wide_df, horizon)
+    print(f"\n=== Composite Indicator Weights for {horizon} ===")
+    print(weights.sort_values(ascending=False).head(15))
+
+print("\nComposite scores added to wide_df!")
+print(wide_df.head())
+
+# 9. Build model-ready features (drop target columns)
+feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m"])
+X = make_features(feature_df)
+X = X.loc[~X.index.duplicated()].sort_index()
+
+# 10. Build targets aligned with X
+df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
+
+# 11. Train multi-horizon models
 pipelines, explainers = train_xgb_multi_horizon(X, df_targets)
 
 
 # ---------------------------------------------
-# 10. Make prediction on the latest data & explain it
+# 12. Make prediction on the latest data & explain it
 # ---------------------------------------------
 print("\n\n====================")
 print("   MODEL PREDICTION ")
 print("====================")
 
-latest_prediction = predict_and_explain(pipelines, X, wide_df)
+# Generate probabilities + top indicators for each horizon (reuse explainers to keep feature ordering aligned)
+latest_prediction = predict_and_explain(pipelines, X, top_n=12, explainers=explainers)
 
 print("\n\nFinal Prediction Output:")
 print(latest_prediction)
