@@ -1,4 +1,4 @@
-from sklearn.ensemble import RandomForestClassifier
+from lightgbm import LGBMClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -74,11 +74,12 @@ def train_model(df):
         X, y, test_size=0.2, shuffle=False
     )
 
-    model = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=12,
-        random_state=42
-    )
+    model = LGBMClassifier(n_estimators=500,
+                           max_depth=1,
+                           learning_rate=0.05,
+                           subsample=0.8,
+                           colsample_bytree=0.8,
+                           random_state=42)
 
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
@@ -116,8 +117,14 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
+        model = LGBMClassifier(
+            n_estimators=500,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+        )
 
-        model = RandomForestClassifier(n_estimators=300)
         model.fit(X_train, y_train)
 
         acc = model.score(X_test, y_test)
