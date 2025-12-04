@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
 import os
 
 try:
@@ -13,6 +15,41 @@ except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
     _LGBM_AVAILABLE = False
+
+
+if _LGBM_AVAILABLE:
+    from lightgbm import early_stopping
+
+    class LightGBMTimeSeriesClassifier(LGBMClassifier):
+        """LightGBM classifier that keeps validation splits for early stopping."""
+
+        def __init__(self, val_fraction=0.2, early_stopping_rounds=50, **kwargs):
+            self.val_fraction = val_fraction
+            self.early_stopping_rounds = early_stopping_rounds
+            super().__init__(**kwargs)
+
+        def fit(self, X, y, **kwargs):
+            X_df = pd.DataFrame(X)
+            y_series = pd.Series(y)
+            X_train, y_train, X_val, y_val = _split_for_early_stopping(
+                X_df, y_series, val_fraction=self.val_fraction
+            )
+
+            callbacks = kwargs.pop("callbacks", [])
+            if X_val is not None and y_val is not None:
+                callbacks.append(early_stopping(self.early_stopping_rounds, verbose=False))
+                return super().fit(
+                    X_train,
+                    y_train,
+                    eval_set=[(X_val, y_val)],
+                    eval_metric="multi_logloss",
+                    callbacks=callbacks,
+                    **kwargs,
+                )
+
+            return super().fit(X_df, y_series, callbacks=callbacks, **kwargs)
+else:
+    LightGBMTimeSeriesClassifier = None
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -97,28 +134,87 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     return X
 
 # ---- LightGBM helpers ----
+def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
+    """Return train/validation splits preserving time order for early stopping."""
+
+    if len(X_df) < 5:
+        return X_df, y_series, None, None
+
+    split_idx = max(1, int(len(X_df) * (1 - val_fraction)))
+    if split_idx >= len(X_df):
+        split_idx = len(X_df) - 1
+
+    X_train, X_val = X_df.iloc[:split_idx], X_df.iloc[split_idx:]
+    y_train, y_val = y_series.iloc[:split_idx], y_series.iloc[split_idx:]
+    return X_train, y_train, X_val, y_val
+
+
 def _fit_lgbm(X, y):
-    """Fit a LightGBM classifier and store metadata for inference."""
+    """Fit a LightGBM classifier with time-aware CV and early stopping."""
 
     # Ensure no missing values during training
     X_filled = X.ffill().bfill()
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
-    if _LGBM_AVAILABLE:
-        model = LGBMClassifier(
-            n_estimators=500,
+
+    if _LGBM_AVAILABLE and len(y_encoded) > 2:
+        base_estimator = LightGBMTimeSeriesClassifier(
+            n_estimators=1000,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
             objective="multiclass",
             random_state=42,
+            val_fraction=0.2,
+            early_stopping_rounds=50,
+            n_jobs=-1,
         )
+
+        pipeline = Pipeline([
+            ("clf", base_estimator),
+        ])
+
+        param_grid = {
+            "clf__min_data_in_leaf": [20, 50],
+            "clf__feature_fraction": [0.5, 0.8],
+            "clf__bagging_fraction": [0.5, 0.8],
+            "clf__lambda_l1": [0.1, 1],
+            "clf__lambda_l2": [0.1, 1],
+        }
+
+        n_splits = max(2, min(5, len(y_encoded) - 1))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+
+        grid_search = GridSearchCV(
+            pipeline,
+            param_grid=param_grid,
+            cv=tscv,
+            scoring="accuracy",
+            n_jobs=-1,
+        )
+
+        grid_search.fit(X_filled, y_encoded)
+        best_model = grid_search.best_estimator_
+        train_accuracy = float(grid_search.best_score_)
+        model = best_model
     else:
-        model = GradientBoostingClassifier(random_state=42)
-    model.fit(X_filled, y_encoded)
-    y_pred_encoded = model.predict(X_filled)
-    train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
+        if _LGBM_AVAILABLE:
+            model = LGBMClassifier(
+                n_estimators=500,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                objective="multiclass",
+                random_state=42,
+            )
+        else:
+            model = GradientBoostingClassifier(random_state=42)
+
+        model.fit(X_filled, y_encoded)
+        y_pred_encoded = model.predict(X_filled)
+        train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
+
     return {
         "model": model,
         "label_encoder": label_encoder,
@@ -247,7 +343,8 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         # 1. Get expected feature order from scaler
         # ---------------------
         model = pipeline["model"]
- 
+        estimator = model.named_steps.get("clf", model) if hasattr(model, "named_steps") else model
+
         label_encoder = pipeline["label_encoder"]
         expected_cols = pipeline["feature_order"]
 
@@ -261,11 +358,11 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        feature_importances = model.feature_importances_
+        feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
         
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols,feature_importances, top_n
+            expected_cols, feature_importances, top_n
         )
 
         results[horizon] = {
