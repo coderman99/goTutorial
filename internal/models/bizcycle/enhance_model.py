@@ -5,7 +5,14 @@ import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score
 import os
-from lightgbm import LGBMClassifier
+
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:  # pragma: no cover - lightweight fallback
+    from sklearn.ensemble import GradientBoostingClassifier
+
+    _LGBM_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -49,7 +56,7 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     returns: X (features DF)
     """
     X = wide.copy()
-        # Remove or coerce non-numeric columns before creating percentage changes
+    # Remove or coerce non-numeric columns before creating percentage changes
     for col in list(X.columns):
         if not pd.api.types.is_numeric_dtype(X[col]):
             coerced = pd.to_numeric(X[col], errors="coerce")
@@ -98,14 +105,17 @@ def _fit_lgbm(X, y):
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
-    model = LGBMClassifier(
-        n_estimators=500,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        objective="multiclass",
-        random_state=42,
-    )
+    if _LGBM_AVAILABLE:
+        model = LGBMClassifier(
+            n_estimators=500,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="multiclass",
+            random_state=42,
+        )
+    else:
+        model = GradientBoostingClassifier(random_state=42)
     model.fit(X_filled, y_encoded)
     y_pred_encoded = model.predict(X_filled)
     train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
@@ -133,7 +143,7 @@ def train_lightgbm_multi_horizon(
         y = df_targets[h].reindex(df_features.index).dropna()
         # align X to y
         X = df_features.reindex(y.index).copy()
-              # If no labels are available for this horizon, skip but keep an explicit
+        # If no labels are available for this horizon, skip but keep an explicit
         # None entry so downstream code can guard against missing accuracies.
         if y.empty:
             pipelines[h] = None
@@ -141,13 +151,14 @@ def train_lightgbm_multi_horizon(
             continue
 
         pipeline = _fit_lgbm(X, y)
-# ---- Predict + explain function for a single latest row ----
 
         model_path = os.path.join(model_dir, f"lgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
-        return pipelines, accuracies
+
+    return pipelines, accuracies
+# ---- Predict + explain function for a single latest row ----
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
@@ -223,6 +234,14 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
     }
 
     for horizon, pipeline in pipelines.items():
+        if pipeline is None:
+            results[horizon] = {
+                "predicted_phase": None,
+                "probabilities": {},
+                "top_features": [],
+                "most_impactful_indicators": [],
+            }
+            continue
 
         # ---------------------------------------------------------
         # 1. Get expected feature order from scaler
