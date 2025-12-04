@@ -2,8 +2,12 @@
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
+from sklearn.pipeline import Pipeline
 import os
+import lightgbm as lgb
 from lightgbm import LGBMClassifier
 
 
@@ -48,7 +52,7 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     returns: X (features DF)
     """
     X = wide.copy()
-        # Remove or coerce non-numeric columns before creating percentage changes
+    # Remove or coerce non-numeric columns before creating percentage changes
     for col in list(X.columns):
         if not pd.api.types.is_numeric_dtype(X[col]):
             coerced = pd.to_numeric(X[col], errors="coerce")
@@ -88,49 +92,117 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
 
     return X
 
-# ---- Hidden Markov Model helpers ----
-def _build_state_label_map(model, labels, scaled_X):
-    """
-    Map each hidden state to the most frequent observed label in training.
-    """
+# ---- LightGBM helpers ----
+def _fit_lgbm(X, y):
+    """Fit a LightGBM classifier with time-series cross-validation and regularization."""
 
-    states = model.predict(scaled_X)
+    # Ensure no missing values during training
+    X_filled = X.ffill().bfill()
 
-    mapping = {}
-    for state in np.unique(states):
-        mask = states == state
-        if mask.any():
-            mapping[state] = labels.reset_index(drop=True)[mask].value_counts().idxmax()
-    return mapping
+    label_encoder = LabelEncoder().fit(y)
+    y_encoded = label_encoder.transform(y)
+    unique_classes = np.unique(y_encoded)
 
+    # Guard against horizons with only a single class worth of labels.
+    if len(unique_classes) < 2:
+        return {
+            "model": None,
+            "label_encoder": label_encoder,
+            "feature_order": list(X.columns),
+            "train_accuracy": None,
+            "n_samples": int(len(X_filled)),
+            "n_classes": int(len(unique_classes)),
+            "status": "single_class",
+        }
 
-def _fit_hmm(X, y):
-    """Fit a Gaussian HMM with as many components as labels present."""
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    n_states = max(len(np.unique(y)), 2)
-    model = GaussianHMM(
-        n_components=n_states,
-        covariance_type="full",
-        n_iter=500,
+    base_clf = LGBMClassifier(
+        objective="multiclass",
         random_state=42,
+        n_estimators=1500,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        n_jobs=-1,
     )
-    model.fit(X_scaled)
 
-    state_label_map = _build_state_label_map(model, y, X_scaled)
+    pipeline = Pipeline([
+        ("clf", base_clf),
+    ])
 
-    label_encoder = LabelEncoder().fit(list(state_label_map.values()))
+    param_grid = {
+        "clf__min_data_in_leaf": [20, 50],
+        "clf__feature_fraction": [0.5, 0.8],
+        "clf__bagging_fraction": [0.5, 0.8],
+        "clf__lambda_l1": [0.1, 1],
+        "clf__lambda_l2": [0.1, 1],
+    }
+
+    # Ensure we have enough samples to run TimeSeriesSplit; otherwise fall back to simple fit
+    if len(y_encoded) > 3:
+        n_splits = min(5, max(2, len(y_encoded) - 1))
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        search = GridSearchCV(
+            estimator=pipeline,
+            param_grid=param_grid,
+            scoring="accuracy",
+            cv=tscv,
+            n_jobs=-1,
+            refit=True,
+        )
+        search.fit(
+            X_filled,
+            y_encoded,
+            clf__eval_metric="multi_logloss",
+            clf__n_iter_no_change=50,
+            clf__validation_fraction=0.2,
+        )
+        best_model = search.best_estimator_
+        best_params = search.best_params_
+    else:
+        # Not enough data for cross-validation; fit baseline model directly.
+        best_model = pipeline.set_params(**{k: v[0] for k, v in param_grid.items()})
+        best_model.fit(
+            X_filled,
+            y_encoded,
+            clf__eval_metric="multi_logloss",
+            clf__n_iter_no_change=50,
+            clf__validation_fraction=0.2,
+        )
+        best_params = {k: v[0] for k, v in param_grid.items()}
+
+    # Refit with explicit chronological validation holdout for early stopping
+    val_size = max(1, int(len(y_encoded) * 0.2))
+    if val_size >= len(y_encoded):
+        val_size = max(1, len(y_encoded) // 5)
+
+    X_train, X_val = X_filled.iloc[:-val_size], X_filled.iloc[-val_size:]
+    y_train, y_val = y_encoded[:-val_size], y_encoded[-val_size:]
+
+    callbacks = [lgb.early_stopping(stopping_rounds=50, verbose=False)]
+    best_model.fit(
+        X_train,
+        y_train,
+        clf__eval_set=[(X_val, y_val)],
+        clf__eval_metric="multi_logloss",
+        clf__callbacks=callbacks,
+    )
+
+    y_pred_encoded = best_model.predict(X_filled)
+    train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
 
     return {
-        "model": model,
-        "scaler": scaler,
-        "state_label_map": state_label_map,
+        "model": best_model,
         "label_encoder": label_encoder,
         "feature_order": list(X.columns),
+        "train_accuracy": float(train_accuracy),
+        "n_samples": int(len(X_filled)),
+        "n_classes": int(len(np.unique(y_encoded))),
+        "best_params": best_params,
+        "status": "trained",
     }
-def train_hmm_multi_horizon(
+
+
+def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -143,42 +215,64 @@ def train_hmm_multi_horizon(
     """
     os.makedirs(model_dir, exist_ok=True)
     pipelines = {}
+    accuracies = {}
 
     for h in horizons:
         y = df_targets[h].reindex(df_features.index).dropna()
         # align X to y
         X = df_features.reindex(y.index).copy()
 
+        # If no labels are available for this horizon, skip but keep an explicit
+        # None entry so downstream code can guard against missing accuracies.
+        if y.empty:
+            pipelines[h] = None
+            accuracies[h] = {
+                "train": None,
+                "n_samples": 0,
+                "n_classes": 0,
+                "status": "no_labels",
+            }
+            continue
 
-        pipeline=_fit_hmm(X, y)
-     
-        model_path = os.path.join(model_dir, f"hmm_pipeline_{h}.joblib")
+        pipeline = _fit_lgbm(X, y)
+        model = pipeline.get("model") if isinstance(pipeline, dict) else None
+
+        metrics = {
+            "train": pipeline.get("train_accuracy") if isinstance(pipeline, dict) else None,
+            "n_samples": pipeline.get("n_samples") if isinstance(pipeline, dict) else None,
+            "n_classes": pipeline.get("n_classes") if isinstance(pipeline, dict) else None,
+            "status": pipeline.get("status") if isinstance(pipeline, dict) else None,
+        }
+
+        if model is None:
+            pipelines[h] = None
+            accuracies[h] = metrics
+            continue
+
+        model_path = os.path.join(model_dir, f"lgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
-    return pipelines, None
+        accuracies[h] = metrics
+    return pipelines, accuracies
 
 # ---- Predict + explain function for a single latest row ----
-def _summarize_feature_impacts(feature_names, state_means, top_n):
-    """Return per-feature and aggregated indicator impacts."""
+def _summarize_feature_impacts(feature_names, importances, top_n):
+    """Return per-feature and aggregated indicator impacts from feature importances."""
     feature_list = list(feature_names)
-    # absolute magnitude for ranking
+
     impact_series = (
-        pd.Series(state_means, index=feature_list)
+        pd.Series(importances, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
 
-    top_features = []
-    for feat in impact_series.head(top_n).index:
-        idx = feature_list.index(feat)
-        top_features.append({
-            "feature": feat,
-            "impact": float(state_means[idx]),
-        })
+    top_features = [
+        {"feature": feat, "impact": float(impact_series.loc[feat])}
+        for feat in impact_series.head(top_n).index
+    ]
 
-    # aggregate by base indicator name (strip lag/suffixes)
     base_impacts = {}
-    for feat, value in zip(feature_list, state_means):
+    for feat, value in zip(feature_list, importances):
         base = feat
         if "_lag" in base:
             base = base.split("_lag")[0]
@@ -212,18 +306,6 @@ def _select_prediction_row(X_all, as_of=None):
         return X_all.loc[[monthly_ts]]
 
     raise KeyError(f"No feature row found for as_of={as_of}")
-def _compute_label_probabilities(state_probs, state_label_map):
-    label_probs = {}
-    for state, prob in enumerate(state_probs):
-        label = state_label_map.get(state)
-        if label is None:
-            continue
-        label_probs[label] = label_probs.get(label, 0.0) + float(prob)
-
-    total = sum(label_probs.values())
-    if total > 0:
-        label_probs = {k: v / total for k, v in label_probs.items()}
-    return label_probs
 def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None):
     """
     Produce predictions for each horizon with probabilities and top drivers.
@@ -247,36 +329,37 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
     }
 
     for horizon, pipeline in pipelines.items():
+        if pipeline is None:
+            # No model was trained for this horizon
+            results[horizon] = {
+                "predicted_phase": None,
+                "probabilities": {},
+                "top_features": [],
+                "most_impactful_indicators": [],
+                "train_accuracy": None,
+            }
+            continue
 
         # ---------------------------------------------------------
-        # 1. Get expected feature order from scaler
-        # ---------------------
         model = pipeline["model"]
-        scaler = pipeline["scaler"]
-        state_label_map = pipeline["state_label_map"]
         label_encoder = pipeline["label_encoder"]
         expected_cols = pipeline["feature_order"]
+        clf = model.named_steps.get("clf") if hasattr(model, "named_steps") else model
 
         # Reindex latest_row to match training order
         X = latest_row.reindex(columns=expected_cols)
         X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
-      
-        scaled = scaler.transform(X)
-        logprob, state_probs = model.score_samples(scaled)
-        state_probs = state_probs[0]
-        pred_state = int(np.argmax(state_probs))
-        pred_label = state_label_map.get(pred_state, label_encoder.classes_[0])
-        label_probs = _compute_label_probabilities(state_probs, state_label_map)
-        # ensure labels appear in encoder order for consistent output
-        prob_dict = {label: float(label_probs.get(label, 0.0)) for label in label_encoder.classes_}
-        # ---------------------------------------------------------
-        # 4. Summaries
-        # ---------------------------------------------------------
-        state_means = model.means_[pred_state]
-        
+        proba = model.predict_proba(X)[0]
+        pred_idx = int(np.argmax(proba))
+        pred_label = label_encoder.inverse_transform([pred_idx])[0]
+
+        prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
+
+        feature_importances = getattr(clf, "feature_importances_", np.zeros(len(expected_cols)))
+
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols,state_means, top_n
+            expected_cols, feature_importances, top_n
         )
 
         results[horizon] = {
@@ -284,6 +367,7 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
             "probabilities": dict(sorted(prob_dict.items(), key=lambda kv: kv[1], reverse=True)),
             "top_features": top_features,
             "most_impactful_indicators": top_indicators,
+            "train_accuracy": pipeline.get("train_accuracy"),
         }
 
     return results

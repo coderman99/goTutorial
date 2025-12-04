@@ -6,7 +6,7 @@ from composite_score import compute_composite_score
 from enhance_model import (
     to_wide_monthly,
     make_features,
-    train_hmm_multi_horizon,
+    train_lightgbm_multi_horizon,
     predict_and_explain,
 )
 import pandas as pd
@@ -107,8 +107,35 @@ X = X.loc[~X.index.duplicated()].sort_index()
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
-# 11. Train multi-horizon models
-pipelines, explainers = train_hmm_multi_horizon(X, df_targets)
+# 11. Train multi-horizon models using LightGBM
+pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
+
+print("\nTraining accuracy by horizon:")
+if not accuracies:
+    print("  (no accuracy information available)")
+else:
+    for horizon, acc_info in accuracies.items():
+        if acc_info is None:
+            print(f"  {horizon}: no training data")
+            continue
+
+        train_acc = acc_info.get("train")
+        samples = acc_info.get("n_samples")
+        classes = acc_info.get("n_classes")
+        status = acc_info.get("status")
+
+        if status == "no_labels":
+            print(f"  {horizon}: no labels available for training")
+            continue
+
+        if status == "single_class":
+            print(f"  {horizon}: skipped (only one class present; n={samples}, classes={classes})")
+            continue
+
+        if train_acc is not None:
+            print(f"  {horizon}: training accuracy {train_acc:.3f} (n={samples}, classes={classes})")
+        else:
+            print(f"  {horizon}: no accuracy computed (n={samples}, classes={classes})")
 
 
 # ---------------------------------------------
@@ -119,7 +146,7 @@ print("   MODEL PREDICTION ")
 print("====================")
 
 # Generate probabilities + top indicators for each horizon (reuse explainers to keep feature ordering aligned)
-latest_prediction = predict_and_explain(pipelines, X, top_n=12, explainers=explainers)
+latest_prediction = predict_and_explain(pipelines, X, top_n=12)
 
 print("\n\nFinal Prediction Output:")
 print(latest_prediction)
