@@ -17,6 +17,41 @@ except ImportError:  # pragma: no cover - lightweight fallback
     _LGBM_AVAILABLE = False
 
 
+if _LGBM_AVAILABLE:
+    from lightgbm import early_stopping
+
+    class LightGBMTimeSeriesClassifier(LGBMClassifier):
+        """LightGBM classifier that keeps validation splits for early stopping."""
+
+        def __init__(self, val_fraction=0.2, early_stopping_rounds=50, **kwargs):
+            self.val_fraction = val_fraction
+            self.early_stopping_rounds = early_stopping_rounds
+            super().__init__(**kwargs)
+
+        def fit(self, X, y, **kwargs):
+            X_df = pd.DataFrame(X)
+            y_series = pd.Series(y)
+            X_train, y_train, X_val, y_val = _split_for_early_stopping(
+                X_df, y_series, val_fraction=self.val_fraction
+            )
+
+            callbacks = kwargs.pop("callbacks", [])
+            if X_val is not None and y_val is not None:
+                callbacks.append(early_stopping(self.early_stopping_rounds, verbose=False))
+                return super().fit(
+                    X_train,
+                    y_train,
+                    eval_set=[(X_val, y_val)],
+                    eval_metric="multi_logloss",
+                    callbacks=callbacks,
+                    **kwargs,
+                )
+
+            return super().fit(X_df, y_series, callbacks=callbacks, **kwargs)
+else:
+    LightGBMTimeSeriesClassifier = None
+
+
 # ---- Helper: wide conversion if you still have long-format monthly data ----
 def to_wide_monthly(df_long):
     """
@@ -124,35 +159,6 @@ def _fit_lgbm(X, y):
     y_encoded = label_encoder.transform(y)
 
     if _LGBM_AVAILABLE and len(y_encoded) > 2:
-        from lightgbm import early_stopping
-
-        class LightGBMTimeSeriesClassifier(LGBMClassifier):
-            def __init__(self, val_fraction=0.2, early_stopping_rounds=50, **kwargs):
-                self.val_fraction = val_fraction
-                self.early_stopping_rounds = early_stopping_rounds
-                super().__init__(**kwargs)
-
-            def fit(self, X, y, **kwargs):
-                X_df = pd.DataFrame(X)
-                y_series = pd.Series(y)
-                X_train, y_train, X_val, y_val = _split_for_early_stopping(
-                    X_df, y_series, val_fraction=self.val_fraction
-                )
-
-                callbacks = kwargs.pop("callbacks", [])
-                if X_val is not None and y_val is not None:
-                    callbacks.append(early_stopping(self.early_stopping_rounds, verbose=False))
-                    return super().fit(
-                        X_train,
-                        y_train,
-                        eval_set=[(X_val, y_val)],
-                        eval_metric="multi_logloss",
-                        callbacks=callbacks,
-                        **kwargs,
-                    )
-
-                return super().fit(X_df, y_series, callbacks=callbacks, **kwargs)
-
         base_estimator = LightGBMTimeSeriesClassifier(
             n_estimators=1000,
             learning_rate=0.05,
