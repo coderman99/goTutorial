@@ -1,4 +1,10 @@
-from lightgbm import LGBMClassifier
+try:
+    from lightgbm import LGBMClassifier
+    _LGBM_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when lightgbm is unavailable
+    from sklearn.ensemble import GradientBoostingClassifier
+
+    _LGBM_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -74,12 +80,15 @@ def train_model(df):
         X, y, test_size=0.2, shuffle=False
     )
 
-    model = LGBMClassifier(n_estimators=500,
-                           max_depth=1,
-                           learning_rate=0.05,
-                           subsample=0.8,
-                           colsample_bytree=0.8,
-                           random_state=42)
+    if _LGBM_AVAILABLE:
+        model = LGBMClassifier(n_estimators=500,
+                               max_depth=1,
+                               learning_rate=0.05,
+                               subsample=0.8,
+                               colsample_bytree=0.8,
+                               random_state=42)
+    else:
+        model = GradientBoostingClassifier(random_state=42)
 
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
@@ -117,13 +126,16 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        model = LGBMClassifier(
-            n_estimators=500,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-        )
+        if _LGBM_AVAILABLE:
+            model = LGBMClassifier(
+                n_estimators=500,
+                learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+            )
+        else:
+            model = GradientBoostingClassifier(random_state=42)
 
         model.fit(X_train, y_train)
 

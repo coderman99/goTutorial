@@ -1,24 +1,37 @@
-from db_loader import load_indicator_data, load_sp500_from_db
-from preprocess import preprocess_monthly
-from labelling import label_business_cycle
-from model import create_future_targets
-from composite_score import compute_composite_score
-from enhance_model import (
+import os
+from pathlib import Path
+import sys
+
+import pandas as pd
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
+from sqlalchemy import create_engine
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
+from internal.models.bizcycle.preprocess import preprocess_monthly
+from internal.models.bizcycle.labelling import label_business_cycle
+from internal.models.bizcycle.model import create_future_targets
+from internal.models.bizcycle.composite_score import compute_composite_score
+from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
     train_lightgbm_multi_horizon,
     predict_and_explain,
 )
-import pandas as pd
-from sqlalchemy import create_engine
-from config import get_database_url
-from dotenv import load_dotenv
-import os
+from internal.models.bizcycle.config import get_database_url
 
 # ---------------------------------------------
 # Load .env
 # ---------------------------------------------
-load_dotenv("C:/Users/harte/Documents/goTutorial/internal/.env")
+env_path = Path(__file__).resolve().parents[3] / "internal" / ".env"
+if load_dotenv and env_path.exists():
+    load_dotenv(env_path)
 
 # ---------------------------------------------
 # 1. Load indicator data
@@ -34,9 +47,10 @@ print("\nMonthly Preprocessed")
 print(monthly.head())
 
 # ---------------------------------------------
-# 3. Load SP500 from database
+# 3. Load SP500 from database (or fallback CSV)
 # ---------------------------------------------
-engine = create_engine(get_database_url())
+db_url = get_database_url()
+engine = create_engine(db_url) if db_url else None
 sp500 = load_sp500_from_db()
 print("\nSP500 Raw:")
 print(sp500.head())
@@ -112,7 +126,10 @@ pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():
-    print(f"  {horizon}: {acc:.3f}")
+    if acc is None:
+        print(f"  {horizon}: no labels available")
+    else:
+        print(f"  {horizon}: {acc:.3f}")
 
 # ---------------------------------------------
 # 12. Make prediction on the latest data & explain it
