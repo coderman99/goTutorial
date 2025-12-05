@@ -41,6 +41,13 @@ def label_business_cycle(df, sp500):
         how="inner"
     )
 
+    # Hard-truncate the merged dataset so feature engineering never sees
+    # synthetic early rows or backward-filled pct_change data. Anchor the
+    # cutoff to the first available cycle label but never before 2000.
+    min_cycle_label_date = merged.index.min()
+    cutoff_date = max(pd.Timestamp("2000-01-01"), min_cycle_label_date)
+    merged = merged[merged.index >= cutoff_date]
+
     return merged
 
 
