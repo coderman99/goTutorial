@@ -115,8 +115,9 @@ for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
 print("\nComposite scores added to wide_df!")
 print(wide_df.head())
 
-# 9. Build model-ready features (drop target columns)
-feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m"])
+# 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
+composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
+feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 
