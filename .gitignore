@@ -1,0 +1,2 @@
+# Ignore trained model artifacts
+internal/models/bizcycle/models/*.joblib
