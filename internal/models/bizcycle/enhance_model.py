@@ -56,6 +56,9 @@ else:
 # ---- Helper: wide conversion if you still have long-format monthly data ----
 def to_wide_monthly(df_long):
     """
+    Convert long-format monthly indicators into a wide table without dropping
+    duplicate timestamps.
+
     Accepts either:
       - long format df with index = timestamp AND column 'name'
       - OR wide format df (returns immediately)
@@ -68,18 +71,39 @@ def to_wide_monthly(df_long):
         return df
 
     # ---- CASE 2: Long format needs pivot ----
-    # Ensure monthly timestamps in index
-    if df.index.dtype != "datetime64[ns]":
-        df.index = pd.to_datetime(df.index)
+    # Ensure timestamp exists only as a column to avoid index/column ambiguity.
+    has_timestamp_column = "timestamp" in df.columns
+    timestamp_in_index = "timestamp" in (df.index.names or [])
 
-    df.index = df.index.to_period("M").to_timestamp("M")
+    if timestamp_in_index and has_timestamp_column:
+        # Drop the index level and keep the explicit column
+        df = df.reset_index()
+    elif timestamp_in_index and not has_timestamp_column:
+        df = df.reset_index()
+    elif not has_timestamp_column:
+        # No column but also no named index: create one from the index values
+        df = df.reset_index()
+        df = df.rename(columns={df.columns[0]: "timestamp"})
 
-    # Pivot to wide
+    # Ensure index is unnamed to avoid accidental clashes after reset
+    df.index.name = None
+
+    # Normalize timestamp to month-end for consistent grouping
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
+
+    # Remove duplicate month/indicator rows that can appear when historical
+    # files are appended multiple times; keep the most recent observation.
+    df = df.sort_values(["timestamp", "name"]).drop_duplicates(
+        subset=["timestamp", "name"], keep="last"
+    )
+
+    # Pivot to wide with aggregation (mean keeps all rows for the month)
     wide = df.pivot_table(
-        index=df.index,
+        index="timestamp",
         columns="name",
         values="value",
-        aggfunc="mean"
+        aggfunc="mean",
     )
 
     wide = wide.sort_index().ffill().bfill()
@@ -106,8 +130,17 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     # percent changes for level indicators can help
     # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
     numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
-    for col in numeric_cols:        
-        X[f"{col}_pct"] = X[col].pct_change()
+    for col in numeric_cols:
+        pct = X[col].pct_change()
+        # clip pct_change extremes so a single bad tick does not dominate scale
+        pct = pct.clip(lower=-5, upper=5)
+        X[f"{col}_pct"] = pct
+
+    # short and medium smoothing to emphasize persistent trends over noise
+    for window in (3, 6):
+        smoothed = X[numeric_cols].rolling(window=window, min_periods=1).mean()
+        smoothed = smoothed.add_suffix(f"_roll{window}")
+        X = pd.concat([X, smoothed], axis=1)
 
     # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
     sp_name_candidates = ['StockMarketIndex', 'SP500', 'SPX', 'sp500', 'StockMarketIndex']
@@ -133,6 +166,8 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     constant_mask = X.nunique(dropna=False) <= 1
     if constant_mask.any():
         X = X.loc[:, ~constant_mask]
+    # Replace infinities from pct_change or other transforms
+    X = X.replace([np.inf, -np.inf], np.nan)
     # final fill
     X = X.ffill().bfill()
 
