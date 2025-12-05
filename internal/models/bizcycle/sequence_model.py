@@ -90,11 +90,17 @@ def _select_top_features(X: pd.DataFrame, y: pd.Series, max_features: int = 64) 
     if X.empty:
         return X, pd.Series(dtype=float)
 
+    # Ensure finite values for MI calculation and downstream scaling
+    X_clean = X.replace([np.inf, -np.inf], np.nan)
+    X_clean = X_clean.loc[:, ~X_clean.isna().all()]
+    X_clean = X_clean.ffill().bfill()
+    X_clean = X_clean.fillna(X_clean.median())
+
     y_encoded = LabelEncoder().fit_transform(y)
-    scores = mutual_info_classif(X, y_encoded, random_state=42, discrete_features=False)
+    scores = mutual_info_classif(X_clean, y_encoded, random_state=42, discrete_features=False)
     score_series = pd.Series(scores, index=X.columns).sort_values(ascending=False)
     selected = score_series.head(max_features).index
-    return X[selected], score_series
+    return X_clean[selected], score_series
 
 
 def _build_sequences(

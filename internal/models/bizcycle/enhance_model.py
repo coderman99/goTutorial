@@ -157,6 +157,8 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     constant_mask = X.nunique(dropna=False) <= 1
     if constant_mask.any():
         X = X.loc[:, ~constant_mask]
+    # Replace infinities from pct_change or other transforms
+    X = X.replace([np.inf, -np.inf], np.nan)
     # final fill
     X = X.ffill().bfill()
 
