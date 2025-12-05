@@ -205,7 +205,7 @@ def _train_single_horizon(
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.CrossEntropyLoss(weight=weight_tensor.to(device))
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=3, verbose=False
+        optimizer, mode="max", factor=0.5, patience=3
     )
 
     best_val = -math.inf
