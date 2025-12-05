@@ -84,8 +84,8 @@ class SequencePipeline:
 # ----------------------------
 
 
-def _select_top_features(X: pd.DataFrame, y: pd.Series, max_features: int = 64) -> Tuple[pd.DataFrame, pd.Series]:
-    """Reduce dimensionality using mutual information scores."""
+def _select_top_features(X: pd.DataFrame, y: pd.Series, max_features: int = 96) -> Tuple[pd.DataFrame, pd.Series]:
+    """Reduce dimensionality using mutual information scores with redundancy pruning."""
 
     if X.empty:
         return X, pd.Series(dtype=float)
@@ -96,10 +96,20 @@ def _select_top_features(X: pd.DataFrame, y: pd.Series, max_features: int = 64) 
     X_clean = X_clean.ffill().bfill()
     X_clean = X_clean.fillna(X_clean.median())
 
+    # Drop highly collinear features to keep the feature screen diverse
+    corr = X_clean.corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    to_drop = [column for column in upper.columns if upper[column].max() > 0.95]
+    if to_drop:
+        X_clean = X_clean.drop(columns=to_drop)
+
+    # Dynamically cap the number of features to a fraction of available samples
+    adaptive_max = max(32, min(max_features, int(len(X_clean) * 0.6)))
+
     y_encoded = LabelEncoder().fit_transform(y)
     scores = mutual_info_classif(X_clean, y_encoded, random_state=42, discrete_features=False)
-    score_series = pd.Series(scores, index=X.columns).sort_values(ascending=False)
-    selected = score_series.head(max_features).index
+    score_series = pd.Series(scores, index=X_clean.columns).sort_values(ascending=False)
+    selected = score_series.head(adaptive_max).index
     return X_clean[selected], score_series
 
 
@@ -142,13 +152,13 @@ def _train_single_horizon(
     X: pd.DataFrame,
     y: pd.Series,
     lookback: int = 18,
-    hidden_size: int = 64,
-    num_layers: int = 1,
-    max_features: int = 64,
-    max_epochs: int = 60,
+    hidden_size: int = 96,
+    num_layers: int = 2,
+    max_features: int = 96,
+    max_epochs: int = 80,
     batch_size: int = 16,
-    learning_rate: float = 1e-3,
-    patience: int = 8,
+    learning_rate: float = 8e-4,
+    patience: int = 10,
 ) -> Optional[SequencePipeline]:
     """Train an attention LSTM classifier for one horizon."""
 
@@ -162,6 +172,11 @@ def _train_single_horizon(
 
     label_encoder = LabelEncoder().fit(targets)
     targets_enc = label_encoder.transform(targets)
+
+    # Class weights to prevent majority regimes from dominating the loss
+    class_counts = np.bincount(targets_enc)
+    class_weights = class_counts.max() / np.maximum(class_counts, 1)
+    weight_tensor = torch.tensor(class_weights, dtype=torch.float32)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
@@ -184,11 +199,14 @@ def _train_single_horizon(
         hidden_size=hidden_size,
         num_layers=num_layers,
         num_classes=len(label_encoder.classes_),
-        dropout=0.2,
+        dropout=0.3,
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(weight=weight_tensor.to(device))
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", factor=0.5, patience=3, verbose=False
+    )
 
     best_val = -math.inf
     epochs_without_improve = 0
@@ -231,6 +249,9 @@ def _train_single_horizon(
             epochs_without_improve += 1
             if epochs_without_improve >= patience:
                 break
+
+        if val_acc is not None:
+            scheduler.step(val_acc)
 
     # Final train accuracy for logging
     model.load_state_dict(best_state)

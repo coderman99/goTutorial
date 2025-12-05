@@ -130,8 +130,17 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     # percent changes for level indicators can help
     # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
     numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
-    for col in numeric_cols:        
-        X[f"{col}_pct"] = X[col].pct_change()
+    for col in numeric_cols:
+        pct = X[col].pct_change()
+        # clip pct_change extremes so a single bad tick does not dominate scale
+        pct = pct.clip(lower=-5, upper=5)
+        X[f"{col}_pct"] = pct
+
+    # short and medium smoothing to emphasize persistent trends over noise
+    for window in (3, 6):
+        smoothed = X[numeric_cols].rolling(window=window, min_periods=1).mean()
+        smoothed = smoothed.add_suffix(f"_roll{window}")
+        X = pd.concat([X, smoothed], axis=1)
 
     # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
     sp_name_candidates = ['StockMarketIndex', 'SP500', 'SPX', 'sp500', 'StockMarketIndex']

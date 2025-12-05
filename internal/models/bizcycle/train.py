@@ -125,7 +125,8 @@ X = X.loc[~X.index.duplicated()].sort_index()
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
 # 11. Train multi-horizon models with sequence-aware LSTM + attention
-pipelines, accuracies = train_lstm_multi_horizon(X, df_targets, lookback=18)
+# Use a 24-month lookback now that 25 years of monthly history is available
+pipelines, accuracies = train_lstm_multi_horizon(X, df_targets, lookback=24)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():
