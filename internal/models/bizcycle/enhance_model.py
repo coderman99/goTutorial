@@ -56,6 +56,9 @@ else:
 # ---- Helper: wide conversion if you still have long-format monthly data ----
 def to_wide_monthly(df_long):
     """
+    Convert long-format monthly indicators into a wide table without dropping
+    duplicate timestamps.
+
     Accepts either:
       - long format df with index = timestamp AND column 'name'
       - OR wide format df (returns immediately)
@@ -68,18 +71,20 @@ def to_wide_monthly(df_long):
         return df
 
     # ---- CASE 2: Long format needs pivot ----
-    # Ensure monthly timestamps in index
-    if df.index.dtype != "datetime64[ns]":
-        df.index = pd.to_datetime(df.index)
+    # Ensure timestamp exists only as a column to avoid index/column ambiguity.
+    if "timestamp" in df.index.names:
+        df = df.reset_index()
 
-    df.index = df.index.to_period("M").to_timestamp("M")
+    # Normalize timestamp to month-end for consistent grouping
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
 
-    # Pivot to wide
+    # Pivot to wide with aggregation (mean keeps all rows for the month)
     wide = df.pivot_table(
-        index=df.index,
+        index="timestamp",
         columns="name",
         values="value",
-        aggfunc="mean"
+        aggfunc="mean",
     )
 
     wide = wide.sort_index().ffill().bfill()
