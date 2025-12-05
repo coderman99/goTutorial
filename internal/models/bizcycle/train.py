@@ -21,8 +21,10 @@ from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
-    train_lightgbm_multi_horizon,
-    predict_and_explain,
+)
+from internal.models.bizcycle.sequence_model import (
+    train_lstm_multi_horizon,
+    predict_with_lstm_attention,
 )
 from internal.models.bizcycle.config import get_database_url
 
@@ -113,16 +115,17 @@ for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
 print("\nComposite scores added to wide_df!")
 print(wide_df.head())
 
-# 9. Build model-ready features (drop target columns)
-feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m"])
+# 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
+composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
+feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
-# 11. Train multi-horizon models
-pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
+# 11. Train multi-horizon models with sequence-aware LSTM + attention
+pipelines, accuracies = train_lstm_multi_horizon(X, df_targets, lookback=18)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():
@@ -138,8 +141,8 @@ print("\n\n====================")
 print("   MODEL PREDICTION ")
 print("====================")
 
-# Generate probabilities + top indicators for each horizon (reuse explainers to keep feature ordering aligned)
-latest_prediction = predict_and_explain(pipelines, X, top_n=12)
+# Generate probabilities + top indicators for each horizon
+latest_prediction = predict_with_lstm_attention(pipelines, X, top_n=12)
 
 print("\n\nFinal Prediction Output:")
 print(latest_prediction)
