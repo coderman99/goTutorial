@@ -71,9 +71,25 @@ def to_wide_monthly(df_long):
         return df
 
     # ---- CASE 2: Long format needs pivot ----
-    # Preserve the timestamp as a dedicated column so pivot_table aggregates
-    # rows that share the same month rather than overwriting them.
-    df["timestamp"] = pd.to_datetime(df.index)
+    # Ensure timestamp exists only as a column to avoid index/column ambiguity.
+    has_timestamp_column = "timestamp" in df.columns
+    timestamp_in_index = "timestamp" in (df.index.names or [])
+
+    if timestamp_in_index and has_timestamp_column:
+        # Drop the index level and keep the explicit column
+        df = df.reset_index()
+    elif timestamp_in_index and not has_timestamp_column:
+        df = df.reset_index()
+    elif not has_timestamp_column:
+        # No column but also no named index: create one from the index values
+        df = df.reset_index()
+        df = df.rename(columns={df.columns[0]: "timestamp"})
+
+    # Ensure index is unnamed to avoid accidental clashes after reset
+    df.index.name = None
+
+    # Normalize timestamp to month-end for consistent grouping
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
 
     # Pivot to wide with aggregation (mean keeps all rows for the month)
