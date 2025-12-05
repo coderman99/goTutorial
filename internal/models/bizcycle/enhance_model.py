@@ -2,10 +2,12 @@
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.linear_model import LogisticRegression
 import os
 
 try:
@@ -105,8 +107,13 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
     # percent changes for level indicators can help
     # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
     numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
-    for col in numeric_cols:        
+    for col in numeric_cols:
         X[f"{col}_pct"] = X[col].pct_change()
+        # rolling z-score dampens dominance of level/return series
+        X[f"{col}_z12"] = (
+            (X[col] - X[col].rolling(12, min_periods=6).mean())
+            / X[col].rolling(12, min_periods=6).std()
+        )
 
     # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
     sp_name_candidates = ['StockMarketIndex', 'SP500', 'SPX', 'sp500', 'StockMarketIndex']
@@ -128,10 +135,51 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
 
     # Remove columns with >50% NaN or constant
     X = X.loc[:, X.isna().mean() < 0.5]
+    # Drop near-constant columns that add noise but little signal
+    constant_mask = X.nunique(dropna=False) <= 1
+    if constant_mask.any():
+        X = X.loc[:, ~constant_mask]
+
+    # Remove highly correlated columns to keep the signal dense and avoid
+    # duplicated information from similar indicators (e.g., multiple yield spreads)
+    X = _drop_high_correlation(X)
+
     # final fill
     X = X.ffill().bfill()
 
     return X
+
+
+def _screen_features_by_importance(X, y, max_features=150, min_score=0.0):
+    """Select top predictive features using mutual information.
+
+    The expanded Leading indicator set increases the number of columns and
+    derived lags. To keep model training efficient and focused on informative
+    signals, this helper keeps only the highest-scoring features.
+    """
+
+    if X.empty:
+        return X, pd.Series(dtype=float)
+
+    scores = mutual_info_classif(X, y, random_state=42, discrete_features=False)
+    score_series = pd.Series(scores, index=X.columns).sort_values(ascending=False)
+    selected = score_series[score_series > min_score].head(max_features).index
+    if selected.empty:
+        selected = score_series.head(max_features).index
+
+    return X[selected], score_series
+
+
+def _drop_high_correlation(X, threshold=0.92):
+    """Remove columns that are highly correlated with an earlier column."""
+
+    if X.empty:
+        return X
+
+    corr = X.corr().abs()
+    upper = corr.where(np.triu(np.ones(corr.shape), k=1).astype(bool))
+    to_drop = [column for column in upper.columns if (upper[column] > threshold).any()]
+    return X.drop(columns=to_drop, errors="ignore")
 
 # ---- LightGBM helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
@@ -150,7 +198,7 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 
 
 def _fit_lgbm(X, y):
-    """Fit a LightGBM classifier with time-aware CV and early stopping."""
+    """Fit a time-aware, regularized classifier for small correlated datasets."""
 
     # Ensure no missing values during training
     X_filled = X.ffill().bfill()
@@ -158,34 +206,37 @@ def _fit_lgbm(X, y):
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
 
-    if _LGBM_AVAILABLE and len(y_encoded) > 2:
-        base_estimator = LightGBMTimeSeriesClassifier(
-            n_estimators=1000,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="multiclass",
-            random_state=42,
-            val_fraction=0.2,
-            early_stopping_rounds=50,
-            n_jobs=-1,
-        )
+    # Screen for the most informative features to reduce noise and training cost
+    max_feats = max(20, min(200, X_filled.shape[1]))
+    X_selected, feature_scores = _screen_features_by_importance(
+        X_filled, y_encoded, max_features=max_feats, min_score=0.0
+    )
 
-        pipeline = Pipeline([
-            ("clf", base_estimator),
-        ])
+    # With limited observations and correlated indicators, prefer an
+    # elastic-net logistic regression over flexible boosted trees.
+    scaler = StandardScaler(with_mean=False)
+    log_reg = LogisticRegression(
+        max_iter=2000,
+        multi_class="multinomial",
+        solver="saga",
+        penalty="elasticnet",
+        class_weight="balanced",
+    )
 
-        param_grid = {
-            "clf__min_data_in_leaf": [20, 50],
-            "clf__feature_fraction": [0.5, 0.8],
-            "clf__bagging_fraction": [0.5, 0.8],
-            "clf__lambda_l1": [0.1, 1],
-            "clf__lambda_l2": [0.1, 1],
-        }
+    pipeline = Pipeline([
+        ("scaler", scaler),
+        ("clf", log_reg),
+    ])
 
-        n_splits = max(2, min(5, len(y_encoded) - 1))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
+    param_grid = {
+        "clf__C": [0.1, 1.0, 5.0],
+        "clf__l1_ratio": [0.0, 0.25, 0.5],
+    }
 
+    n_splits = max(2, min(4, len(y_encoded) - 1))
+    tscv = TimeSeriesSplit(n_splits=n_splits)
+
+    if len(y_encoded) >= n_splits + 1:
         grid_search = GridSearchCV(
             pipeline,
             param_grid=param_grid,
@@ -194,31 +245,20 @@ def _fit_lgbm(X, y):
             n_jobs=-1,
         )
 
-        grid_search.fit(X_filled, y_encoded)
-        best_model = grid_search.best_estimator_
+        grid_search.fit(X_selected, y_encoded)
+        model = grid_search.best_estimator_
         train_accuracy = float(grid_search.best_score_)
-        model = best_model
     else:
-        if _LGBM_AVAILABLE:
-            model = LGBMClassifier(
-                n_estimators=500,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                objective="multiclass",
-                random_state=42,
-            )
-        else:
-            model = GradientBoostingClassifier(random_state=42)
-
-        model.fit(X_filled, y_encoded)
-        y_pred_encoded = model.predict(X_filled)
+        model = pipeline
+        model.fit(X_selected, y_encoded)
+        y_pred_encoded = model.predict(X_selected)
         train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
 
     return {
         "model": model,
         "label_encoder": label_encoder,
-        "feature_order": list(X.columns),
+        "feature_order": list(X_selected.columns),
+        "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
 def train_lightgbm_multi_horizon(
