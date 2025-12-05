@@ -88,7 +88,7 @@ func fetchSeriesFromFRED(seriesID string) ([]FredObservation, error) {
 // ----------------------
 
 func PopulateIndicators(db *gorm.DB) error {
-	ind := indicatorsStruct.Indicators
+	ind := indicatorsStruct.SecondaryIndicators
 	v := reflect.ValueOf(ind)
 	t := reflect.TypeOf(ind)
 

@@ -74,6 +74,76 @@ type IndicatorSeriesID struct {
 	Coincident CoincidentIndicatorsSeriesID
 }
 
+type SecondaryIndicatorSeriesID struct {
+	Leading              SecondaryLeadingIndicatorsID
+	Lagging              SecondaryLaggingIndicatorsID
+	Coincident           SecondaryCoincidentIndicatorsID
+	MarketBased          MarketBasedIndicatorsID
+	CreditLendingLiquidy CreditLendingLiquidyIndicatorsID
+	Global               GlobalIndicatorsID
+}
+
+// These are also leading, lagging, and coincident indicators commonly used in economic analysis.
+// added these to the database
+
+type SecondaryLeadingIndicatorsID struct {
+	BuildingPermits                          string // Number of new building permits issued
+	NewOneFamilyHomesSold                    string // Number of new single-family homes sold
+	ISMManufacturingPMINewOrders             string // New orders component of the ISM Manufacturing PMI
+	ISMManufacturingBacklogOrders            string // Backlog of orders component of the ISM Manufacturing PMI
+	DurableGoodsUnfilledOrders               string // Total value of unfilled orders for durable goods
+	InitialJoblessClaims                     string // Number of new claims for unemployment benefits
+	TemporaryHelpEmployment                  string // Employment in temporary help services
+	TenY3MYieldSpread                        string // Spread between 10-year and 3-month Treasury yields
+	BBBCorporateBondYield                    string // Yield on BBB-rated corporate bonds
+	MoodysBAAACorporateBondYield             string // Yield on Moody's BAA-rated corporate bonds
+	NationalFinancialConditionsIndex         string // Index measuring overall financial conditions in the economy
+	MighiganConsumerSentimentIndex           string // Index measuring consumer sentiment from the University of Michigan
+	ConferenceBoardConsumerExpectationsIndex string // Index measuring consumer expectations from the Conference Board
+	RealM2MoneyStock                         string // Real M2 money stock adjusted for inflation
+}
+
+type SecondaryCoincidentIndicatorsID struct {
+	RealPersonalConsumptionExpenditures string // Real personal consumption expenditures adjusted for inflation
+	RealDisposablePersonalIncome        string // Real disposable personal income adjusted for inflation
+	CapacityUtilization                 string // Percentage of total industrial capacity being utilized
+	RealGDP                             string // Real Gross Domestic Product adjusted for inflation
+}
+
+type SecondaryLaggingIndicatorsID struct {
+	CoreCPI                       string // Core Consumer Price Index excluding food and energy
+	CorePCEPriceIndex             string // Core Personal Consumption Expenditures Price Index
+	CommercialLoansDeliquencyRate string // Delinquency rate on commercial loans
+}
+
+type MarketBasedIndicatorsID struct {
+	VIXIndex                  string // Volatility Index (VIX) measuring market volatility
+	HighYieldBondSpread       string // Spread between high-yield bonds and Treasury bonds
+	InvestmentGradeBondSpread string // Spread between investment-grade bonds and Treasury bonds
+	CopperGoldRatioCP         string // Ratio of copper prices to gold prices
+	CopperGoldRatioGP         string // Ratio of copper prices to gold prices (alternative source)
+	DJTIGIndex                string // Dow Jones Total Investment Grade Index
+	SemiconductorBillings     string // Total billings in the semiconductor industry
+}
+
+type CreditLendingLiquidyIndicatorsID struct {
+	CommercialAndIndustrialLoans string // Total amount of commercial and industrial loans
+	ConsumerCreditTotal          string // Total amount of consumer credit
+	SeniorLoanOfficerSurveyLS    string // Senior Loan Officer Survey on lending standards for large and medium firms
+	CorporateProfitaAfterTax     string // Corporate profits after tax
+	HouseholdDebtServiceRatio    string // Ratio of household debt service payments to disposable personal income
+	RealCorporateEarnings        string // Real corporate earnings adjusted for inflation
+}
+
+type GlobalIndicatorsID struct {
+	GermanIndustrialProduction string // Industrial production index for Germany
+	GermanNewOrders            string // New orders index for Germany
+	ChinaManufacturingPMI      string // Manufacturing Purchasing Managers' Index for China
+	ChinaIndustrialProduction  string // Industrial production index for China
+	BalticDryIndex             string // Baltic Dry Index measuring shipping costs for bulk commodities
+	OCEDLeadingIndicator       string // OECD Composite Leading Indicator
+}
+
 var Indicators = IndicatorSeriesID{
 	Leading: LeadingIndicatorsSeriesID{
 		ConsumerConfidenceIndex: "UMCSENT",
@@ -107,6 +177,59 @@ var Indicators = IndicatorSeriesID{
 		PersonalIncome:            "PI",
 		RetailSales:               "RSAFS",
 		NonAgriculturalEmployment: "PAYEMS",
+	},
+}
+
+var SecondaryIndicators = SecondaryIndicatorSeriesID{
+	Leading: SecondaryLeadingIndicatorsID{
+		BuildingPermits:                          "PERMIT",    // New private housing units authorized
+		NewOneFamilyHomesSold:                    "HSN1F",     // New 1-family houses sold
+		ISMManufacturingPMINewOrders:             "NAPMNOI",   // ISM New Orders Index
+		ISMManufacturingBacklogOrders:            "NAPMBOI",   // ISM Backlog of Orders
+		DurableGoodsUnfilledOrders:               "AMTMUO",    // Manufacturers’ Unfilled Orders for Durable Goods
+		InitialJoblessClaims:                     "ICSA",      // Initial Unemployment Claims
+		TemporaryHelpEmployment:                  "TEMPHELPS", // Temporary help services employment
+		TenY3MYieldSpread:                        "T10Y3M",    // 10-Year minus 3-Month Treasury Spread
+		BBBCorporateBondYield:                    "DBAA",      // Moody's Seasoned Baa Corporate Bond Yield
+		MoodysBAAACorporateBondYield:             "AAA",       // Moody's Seasoned Aaa Corporate Bond Yield
+		NationalFinancialConditionsIndex:         "NFCI",      // Chicago Fed National Financial Conditions Index
+		ConferenceBoardConsumerExpectationsIndex: "HOSRECS",   // Consumer Expectations (via Household Survey Rec Series)
+		RealM2MoneyStock:                         "M2REAL",    // Real M2 Money Stock
+	},
+	Coincident: SecondaryCoincidentIndicatorsID{
+		RealPersonalConsumptionExpenditures: "PCEC96",
+		RealDisposablePersonalIncome:        "DSPIC96",
+		CapacityUtilization:                 "TCU",
+		RealGDP:                             "GDPC96",
+	},
+	Lagging: SecondaryLaggingIndicatorsID{
+		CoreCPI:                       "CPILFESL",
+		CorePCEPriceIndex:             "PCEPILFE",
+		CommercialLoansDeliquencyRate: "DRCLACBS",
+	},
+	MarketBased: MarketBasedIndicatorsID{
+		VIXIndex:                  "VIXCLS",
+		HighYieldBondSpread:       "BAMLH0A0HYM2",
+		InvestmentGradeBondSpread: "BAMLCOA4CBBB",
+		CopperGoldRatioCP:         "PCOPPUSDM",
+		CopperGoldRatioGP:         "GOLDAMGBD228NLBM",
+		DJTIGIndex:                "DJTA",
+		SemiconductorBillings:     "SEMICOND",
+	},
+	CreditLendingLiquidy: CreditLendingLiquidyIndicatorsID{
+		CommercialAndIndustrialLoans: "BUSLOANS",
+		ConsumerCreditTotal:          "TOTALSL",
+		SeniorLoanOfficerSurveyLS:    "DRTSCILM",
+		CorporateProfitaAfterTax:     "CP",
+		HouseholdDebtServiceRatio:    "TDSP",
+	},
+	Global: GlobalIndicatorsID{
+		GermanIndustrialProduction: "DEUPROINDMISEMEI",
+		ChinaManufacturingPMI:      "CHPMMANPMIM",
+		GermanNewOrders:            "BDIROM01DEM6615",
+		ChinaIndustrialProduction:  "IPCN",
+		BalticDryIndex:             "BDIY",
+		OCEDLeadingIndicator:       "CHELCI",
 	},
 }
 
