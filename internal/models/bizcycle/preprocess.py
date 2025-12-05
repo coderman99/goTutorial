@@ -9,11 +9,19 @@ def preprocess_monthly(df):
 
     df = df.copy()
 
+    # Drop exact duplicate rows (common when appending new history) so they
+    # are not double-counted during monthly aggregation.
+    df = df.drop_duplicates()
+
     # ensure tz-naive
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
 
     # convert to end-of-month
     df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
+
+    # Remove duplicated monthly points (same indicator, month, and value)
+    # introduced by appended historical files.
+    df = df.drop_duplicates(subset=["timestamp", "name", "value"])
 
     # KEEP all information
     # (1) group by timestamp + name
