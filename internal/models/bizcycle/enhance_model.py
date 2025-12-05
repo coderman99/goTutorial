@@ -6,6 +6,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import mutual_info_classif
 import os
 
 try:
@@ -128,10 +129,34 @@ def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
 
     # Remove columns with >50% NaN or constant
     X = X.loc[:, X.isna().mean() < 0.5]
+    # Drop near-constant columns that add noise but little signal
+    constant_mask = X.nunique(dropna=False) <= 1
+    if constant_mask.any():
+        X = X.loc[:, ~constant_mask]
     # final fill
     X = X.ffill().bfill()
 
     return X
+
+
+def _screen_features_by_importance(X, y, max_features=150, min_score=0.0):
+    """Select top predictive features using mutual information.
+
+    The expanded Leading indicator set increases the number of columns and
+    derived lags. To keep model training efficient and focused on informative
+    signals, this helper keeps only the highest-scoring features.
+    """
+
+    if X.empty:
+        return X, pd.Series(dtype=float)
+
+    scores = mutual_info_classif(X, y, random_state=42, discrete_features=False)
+    score_series = pd.Series(scores, index=X.columns).sort_values(ascending=False)
+    selected = score_series[score_series > min_score].head(max_features).index
+    if selected.empty:
+        selected = score_series.head(max_features).index
+
+    return X[selected], score_series
 
 # ---- LightGBM helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
@@ -157,6 +182,12 @@ def _fit_lgbm(X, y):
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
+
+    # Screen for the most informative features to reduce noise and training cost
+    max_feats = max(20, min(200, X_filled.shape[1]))
+    X_selected, feature_scores = _screen_features_by_importance(
+        X_filled, y_encoded, max_features=max_feats, min_score=0.0
+    )
 
     if _LGBM_AVAILABLE and len(y_encoded) > 2:
         base_estimator = LightGBMTimeSeriesClassifier(
@@ -194,7 +225,7 @@ def _fit_lgbm(X, y):
             n_jobs=-1,
         )
 
-        grid_search.fit(X_filled, y_encoded)
+        grid_search.fit(X_selected, y_encoded)
         best_model = grid_search.best_estimator_
         train_accuracy = float(grid_search.best_score_)
         model = best_model
@@ -211,14 +242,15 @@ def _fit_lgbm(X, y):
         else:
             model = GradientBoostingClassifier(random_state=42)
 
-        model.fit(X_filled, y_encoded)
-        y_pred_encoded = model.predict(X_filled)
+        model.fit(X_selected, y_encoded)
+        y_pred_encoded = model.predict(X_selected)
         train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
 
     return {
         "model": model,
         "label_encoder": label_encoder,
-        "feature_order": list(X.columns),
+        "feature_order": list(X_selected.columns),
+        "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
 def train_lightgbm_multi_horizon(
