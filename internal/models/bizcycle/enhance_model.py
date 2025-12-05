@@ -92,6 +92,12 @@ def to_wide_monthly(df_long):
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
 
+    # Remove duplicate month/indicator rows that can appear when historical
+    # files are appended multiple times; keep the most recent observation.
+    df = df.sort_values(["timestamp", "name"]).drop_duplicates(
+        subset=["timestamp", "name"], keep="last"
+    )
+
     # Pivot to wide with aggregation (mean keeps all rows for the month)
     wide = df.pivot_table(
         index="timestamp",
