@@ -38,6 +38,8 @@ if load_dotenv and env_path.exists():
 # ---------------------------------------------
 # 1. Load indicator data
 # ---------------------------------------------
+EARLIEST_DATE = pd.Timestamp("1995-01-01")
+
 df = load_indicator_data()
 print(df.head())
 
@@ -62,6 +64,8 @@ print(sp500.head())
 # ---------------------------------------------
 labeled_df = label_business_cycle(monthly, sp500)
 labeled_df = labeled_df[~labeled_df.index.duplicated(keep="last")]
+# Keep only the desired history window
+labeled_df = labeled_df[labeled_df.index >= EARLIEST_DATE]
 print("\nBusiness Cycle Labeled")
 
 print(labeled_df.head())
@@ -105,6 +109,7 @@ metadata = labeled_df[metadata_cols].groupby(labeled_df.index).first()
 wide_df = metadata.join(indicator_value_wide, how="inner")
 wide_df = wide_df.join(indicator_cat_wide, how="left")
 wide_df = wide_df.loc[~wide_df.index.duplicated()].sort_index()
+wide_df = wide_df[wide_df.index >= EARLIEST_DATE]
 
 # 8. Compute composite scores for each horizon using the wide feature set
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
