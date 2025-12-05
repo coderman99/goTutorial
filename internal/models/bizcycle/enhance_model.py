@@ -4,53 +4,16 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import accuracy_score
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import mutual_info_classif
 import os
 
 try:
-    from lightgbm import LGBMClassifier
-    _LGBM_AVAILABLE = True
+    from xgboost import XGBClassifier
+    _XGB_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LGBM_AVAILABLE = False
-
-
-if _LGBM_AVAILABLE:
-    from lightgbm import early_stopping
-
-    class LightGBMTimeSeriesClassifier(LGBMClassifier):
-        """LightGBM classifier that keeps validation splits for early stopping."""
-
-        def __init__(self, val_fraction=0.2, early_stopping_rounds=50, **kwargs):
-            self.val_fraction = val_fraction
-            self.early_stopping_rounds = early_stopping_rounds
-            super().__init__(**kwargs)
-
-        def fit(self, X, y, **kwargs):
-            X_df = pd.DataFrame(X)
-            y_series = pd.Series(y)
-            X_train, y_train, X_val, y_val = _split_for_early_stopping(
-                X_df, y_series, val_fraction=self.val_fraction
-            )
-
-            callbacks = kwargs.pop("callbacks", [])
-            if X_val is not None and y_val is not None:
-                callbacks.append(early_stopping(self.early_stopping_rounds, verbose=False))
-                return super().fit(
-                    X_train,
-                    y_train,
-                    eval_set=[(X_val, y_val)],
-                    eval_metric="multi_logloss",
-                    callbacks=callbacks,
-                    **kwargs,
-                )
-
-            return super().fit(X_df, y_series, callbacks=callbacks, **kwargs)
-else:
-    LightGBMTimeSeriesClassifier = None
+    _XGB_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -209,8 +172,8 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_lgbm(X, y):
-    """Fit a LightGBM classifier with time-aware CV and early stopping."""
+def _fit_xgb(X, y):
+    """Fit an XGBoost classifier with time-aware validation for early stopping."""
 
     # Ensure no missing values during training
     X_filled = X.ffill().bfill()
@@ -224,62 +187,38 @@ def _fit_lgbm(X, y):
         X_filled, y_encoded, max_features=max_feats, min_score=0.0
     )
 
-    if _LGBM_AVAILABLE and len(y_encoded) > 2:
-        base_estimator = LightGBMTimeSeriesClassifier(
-            n_estimators=1000,
+    if _XGB_AVAILABLE:
+        model = XGBClassifier(
+            n_estimators=800,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
-            objective="multiclass",
+            max_depth=4,
+            objective="multi:softprob",
+            eval_metric="mlogloss",
             random_state=42,
-            val_fraction=0.2,
-            early_stopping_rounds=50,
             n_jobs=-1,
         )
 
-        pipeline = Pipeline([
-            ("clf", base_estimator),
-        ])
-
-        param_grid = {
-            "clf__min_data_in_leaf": [20, 50],
-            "clf__feature_fraction": [0.5, 0.8],
-            "clf__bagging_fraction": [0.5, 0.8],
-            "clf__lambda_l1": [0.1, 1],
-            "clf__lambda_l2": [0.1, 1],
-        }
-
-        n_splits = max(2, min(5, len(y_encoded) - 1))
-        tscv = TimeSeriesSplit(n_splits=n_splits)
-
-        grid_search = GridSearchCV(
-            pipeline,
-            param_grid=param_grid,
-            cv=tscv,
-            scoring="accuracy",
-            n_jobs=-1,
+        X_train, y_train, X_val, y_val = _split_for_early_stopping(
+            X_selected, pd.Series(y_encoded), val_fraction=0.2
         )
 
-        grid_search.fit(X_selected, y_encoded)
-        best_model = grid_search.best_estimator_
-        train_accuracy = float(grid_search.best_score_)
-        model = best_model
-    else:
-        if _LGBM_AVAILABLE:
-            model = LGBMClassifier(
-                n_estimators=500,
-                learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                objective="multiclass",
-                random_state=42,
+        if X_val is not None and y_val is not None:
+            model.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_val, y_val)],
+                verbose=False,
             )
         else:
-            model = GradientBoostingClassifier(random_state=42)
-
+            model.fit(X_selected, y_encoded)
+    else:
+        model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
-        y_pred_encoded = model.predict(X_selected)
-        train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
+
+    y_pred_encoded = model.predict(X_selected)
+    train_accuracy = accuracy_score(y_encoded, y_pred_encoded)
 
     return {
         "model": model,
@@ -288,7 +227,7 @@ def _fit_lgbm(X, y):
         "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
-def train_lightgbm_multi_horizon(
+def train_xgboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -313,14 +252,17 @@ def train_lightgbm_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_lgbm(X, y)
+        pipeline = _fit_xgb(X, y)
 
-        model_path = os.path.join(model_dir, f"lgbm_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"xgb_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
 
     return pipelines, accuracies
+
+# Backwards-compatible alias for older callers
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon
 # ---- Predict + explain function for a single latest row ----
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""

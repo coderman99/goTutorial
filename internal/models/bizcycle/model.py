@@ -1,10 +1,10 @@
 try:
-    from lightgbm import LGBMClassifier
-    _LGBM_AVAILABLE = True
-except ImportError:  # pragma: no cover - fallback when lightgbm is unavailable
+    from xgboost import XGBClassifier
+    _XGB_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when xgboost is unavailable
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LGBM_AVAILABLE = False
+    _XGB_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -76,25 +76,44 @@ def train_model(df):
 
     X = X.fillna(method="ffill").fillna(method="bfill")
 
+    label_encoder = LabelEncoder().fit(y)
+    y_encoded = label_encoder.transform(y)
+
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, shuffle=False
+        X, y_encoded, test_size=0.2, shuffle=False
     )
 
-    if _LGBM_AVAILABLE:
-        model = LGBMClassifier(n_estimators=500,
-                               max_depth=1,
-                               learning_rate=0.05,
-                               subsample=0.8,
-                               colsample_bytree=0.8,
-                               random_state=42)
+    if _XGB_AVAILABLE:
+        model = XGBClassifier(
+            n_estimators=600,
+            max_depth=3,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="multi:softprob",
+            eval_metric="mlogloss",
+            random_state=42,
+            n_jobs=-1,
+        )
     else:
         model = GradientBoostingClassifier(random_state=42)
 
-    model.fit(X_train, y_train)
-    preds = model.predict(X_test)
+    if _XGB_AVAILABLE:
+        model.fit(
+            X_train,
+            y_train,
+            eval_set=[(X_test, y_test)],
+            verbose=False,
+        )
+    else:
+        model.fit(X_train, y_train)
 
-    print(classification_report(y_test, preds))
-    return model, X_test, y_test
+    preds_encoded = model.predict(X_test)
+    preds = label_encoder.inverse_transform(preds_encoded)
+    y_test_labels = label_encoder.inverse_transform(y_test)
+
+    print(classification_report(y_test_labels, preds))
+    return model, X_test, y_test_labels
 
 def create_future_targets(df):
     df["cycle_1m"] = df["cycle_phase"].shift(-1)
@@ -126,13 +145,17 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        if _LGBM_AVAILABLE:
-            model = LGBMClassifier(
-                n_estimators=500,
+        if _XGB_AVAILABLE:
+            model = XGBClassifier(
+                n_estimators=600,
                 learning_rate=0.05,
                 subsample=0.8,
                 colsample_bytree=0.8,
+                max_depth=3,
+                objective="multi:softprob",
+                eval_metric="mlogloss",
                 random_state=42,
+                n_jobs=-1,
             )
         else:
             model = GradientBoostingClassifier(random_state=42)
