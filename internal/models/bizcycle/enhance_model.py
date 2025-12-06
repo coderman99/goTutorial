@@ -197,6 +197,7 @@ def _fit_lightgbm(X, y):
             learning_rate=0.05,
             objective="multiclass",
             random_state=42,
+            verbosity=-1,
         )
 
         if X_val is not None and y_val is not None:
@@ -205,10 +206,9 @@ def _fit_lightgbm(X, y):
                 y_train,
                 eval_set=[(X_val, y_val)],
                 eval_metric="multi_logloss",
-                verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded, verbose=False)
+            model.fit(X_selected, y_encoded)
     else:  # pragma: no cover - fallback for environments without lightgbm
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
