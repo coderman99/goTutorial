@@ -92,6 +92,11 @@ print(labeled_df.head())
 # ---------------------------------------------
 # 6. Compute Composite Scores for each horizon
 # ---------------------------------------------
+# Remove stock/return-derived columns before computing composite scores to ensure
+# the weights only reflect macro indicators.
+if "returns" in labeled_df.columns:
+    labeled_df = labeled_df.drop(columns=["returns"])
+
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
     labeled_df, weights = compute_composite_score(labeled_df, horizon)
     print(f"\n=== Composite Indicator Weights for {horizon} ===")
@@ -156,6 +161,16 @@ if constant_cols:
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 available_targets = df_targets.dropna(how="all").shape[0]
+print(
+    f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
+)
+
+# Trim rows where all horizons are missing to keep features/labels in sync.
+valid_idx = df_targets.dropna(how="all").index
+X = X.loc[valid_idx]
+df_targets = df_targets.loc[valid_idx]
+
+available_targets = df_targets.shape[0]
 print(
     f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
 )

@@ -205,6 +205,9 @@ def _fit_xgboost(X, y):
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
 
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
+
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
     X_filled = X_encoded.ffill()
