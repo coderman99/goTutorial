@@ -21,10 +21,8 @@ from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
-)
-from internal.models.bizcycle.sequence_model import (
-    train_lstm_multi_horizon,
-    predict_with_lstm_attention,
+    train_lightgbm_multi_horizon,
+    predict_and_explain,
 )
 from internal.models.bizcycle.config import get_database_url
 
@@ -34,6 +32,16 @@ from internal.models.bizcycle.config import get_database_url
 env_path = Path(__file__).resolve().parents[3] / "internal" / ".env"
 if load_dotenv and env_path.exists():
     load_dotenv(env_path)
+
+
+def drop_constant_columns(df: pd.DataFrame):
+    """Remove columns that carry no signal before model training."""
+
+    nunique = df.nunique(dropna=False)
+    constant_cols = nunique[nunique <= 1].index.tolist()
+    if constant_cols:
+        df = df.drop(columns=constant_cols)
+    return df, constant_cols
 
 # ---------------------------------------------
 # 1. Load indicator data
@@ -126,12 +134,16 @@ feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composit
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 
+# Remove constant columns that provide no predictive signal
+X, constant_cols = drop_constant_columns(X)
+if constant_cols:
+    print(f"Dropped constant columns: {constant_cols}")
+
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
 
-# 11. Train multi-horizon models with sequence-aware LSTM + attention
-# Use a 24-month lookback now that 25 years of monthly history is available
-pipelines, accuracies = train_lstm_multi_horizon(X, df_targets, lookback=24)
+# 11. Train multi-horizon models with LightGBM classifiers
+pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():
@@ -148,7 +160,7 @@ print("   MODEL PREDICTION ")
 print("====================")
 
 # Generate probabilities + top indicators for each horizon
-latest_prediction = predict_with_lstm_attention(pipelines, X, top_n=12)
+latest_prediction = predict_and_explain(pipelines, X, top_n=12)
 
 print("\n\nFinal Prediction Output:")
 print(latest_prediction)

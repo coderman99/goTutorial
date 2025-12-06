@@ -9,6 +9,12 @@ def preprocess_monthly(df):
 
     df = df.copy()
 
+    # If callers provided a timestamp index *and* a timestamp column, drop the
+    # index to avoid ambiguous lookups when sorting. The timestamp column is the
+    # single source of truth for downstream resampling.
+    if "timestamp" in df.index.names:
+        df = df.reset_index(drop=True)
+
     # Drop exact duplicate rows (common when appending new history) so they
     # are not double-counted during monthly aggregation.
     df = df.drop_duplicates()
@@ -16,27 +22,24 @@ def preprocess_monthly(df):
     # ensure tz-naive
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
 
-    # convert to end-of-month
-    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
-
-    # Sort so "keep='last'" is deterministic when removing duplicate months
-    # from newly appended history.
-    sort_cols = [c for c in ["timestamp", "name", "id"] if c in df.columns]
+    # Sort before resampling to make "last" deterministic when multiple points
+    # land in the same month (e.g., daily SP500 history vs. legacy monthly rows).
+    sort_cols = [c for c in ["name", "timestamp", "id"] if c in df.columns]
     df = df.sort_values(sort_cols, na_position="last")
 
-    # Remove duplicate monthly points per indicator, keeping the most recent
-    # record for that month instead of averaging conflicting duplicates.
-    df = df.drop_duplicates(subset=["timestamp", "name"], keep="last")
+    # Normalize to month-end using a per-indicator resample so we never
+    # overwrite earlier history when new data ranges are appended.
+    def _resample_group(group: pd.DataFrame) -> pd.DataFrame:
+        group = group.set_index("timestamp").sort_index()
+        resampled = group.resample("ME").last()
+        resampled.index = resampled.index.to_period("M").to_timestamp("M")
+        # Keep earliest monthly observation when history is appended later
+        resampled = resampled[~resampled.index.duplicated(keep="first")]
+        resampled["name"] = group["name"].iloc[0]
+        return resampled
 
-    # KEEP all information
-    # (1) group by timestamp + name
-    grouped = df.groupby(["timestamp", "name"])
-
-    monthly = grouped.agg({
-        "value": "mean",
-        "indicator_cat": "first",
-        "id": "first"
-    }).reset_index()
+    monthly = df.groupby("name", group_keys=False).apply(_resample_group)
+    monthly = monthly.reset_index().rename(columns={"index": "timestamp"})
 
     category_map = {
         "Leading": 1,
@@ -52,7 +55,9 @@ def preprocess_monthly(df):
         .astype(int)
     )
 
-    # reindex to timestamp
+    # Ensure strict month-end ordering without clobbering earlier history
     monthly = monthly.set_index("timestamp")
+    monthly = monthly[~monthly.index.duplicated(keep="first")]
+    monthly = monthly.sort_index()
 
     return monthly
