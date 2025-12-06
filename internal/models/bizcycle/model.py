@@ -39,11 +39,6 @@ def make_features(wide_df):
     # forward/backward fill
     df = df.ffill().bfill()
 
-    # Create returns
-    df["sp500_ret_1m"] = df["sp500"].pct_change()
-    df["sp500_ret_3m"] = df["sp500"].pct_change(3)
-    df["sp500_ret_6m"] = df["sp500"].pct_change(6)
-
     # Lag all indicators so model does not peek ahead
     for col in df.columns:
         df[f"{col}_lag1"] = df[col].shift(1)
@@ -109,21 +104,24 @@ def train_model(df):
         X, y_encoded, test_size=0.2, shuffle=False
     )
 
-    if _XGBOOST_AVAILABLE:
+    if _LIGHTGBM_AVAILABLE:
         class_counts = np.bincount(y_encoded)
-        imbalance_ratio = float(class_counts.max() / class_counts.min()) if class_counts.min() > 0 else 1.0
+        class_weight = {
+            cls: class_counts.sum() / (len(class_counts) * cnt)
+            for cls, cnt in enumerate(class_counts) if cnt > 0
+        }
 
-        model = XGBClassifier(
-            n_estimators=300,
-            max_depth=3,
+        model = LGBMClassifier(
+            n_estimators=400,
+            num_leaves=31,
+            max_depth=-1,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
-            eval_metric="mlogloss",
-            objective="multi:softprob",
+            objective="multiclass",
+            class_weight=class_weight,
             random_state=42,
-            scale_pos_weight=imbalance_ratio,
-            tree_method="hist",
+            importance_type="gain",
         )
         model.fit(
             X_train,
@@ -172,26 +170,30 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        if _XGBOOST_AVAILABLE:
+        if _LIGHTGBM_AVAILABLE:
             class_counts = y_train.value_counts()
-            imbalance_ratio = float(class_counts.max() / class_counts.min()) if len(class_counts) > 1 else 1.0
+            class_weight = {
+                cls: class_counts.sum() / (len(class_counts) * cnt)
+                for cls, cnt in class_counts.items()
+            }
 
-            model = XGBClassifier(
-                n_estimators=300,
-                max_depth=3,
+            model = LGBMClassifier(
+                n_estimators=400,
+                num_leaves=31,
+                max_depth=-1,
                 learning_rate=0.05,
                 subsample=0.8,
                 colsample_bytree=0.8,
-                eval_metric="mlogloss",
-                objective="multi:softprob",
+                objective="multiclass",
+                class_weight=class_weight,
                 random_state=42,
-                scale_pos_weight=imbalance_ratio,
-                tree_method="hist",
+                importance_type="gain",
             )
             model.fit(
                 X_train,
                 y_train,
                 eval_set=[(X_test, y_test)],
+                eval_metric="multi_logloss",
                 verbose=False,
             )
         else:

@@ -139,9 +139,14 @@ print(wide_df.head())
 # 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
 composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
 feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
+# Strip any stock-market return-derived columns before feature engineering
+feature_df = feature_df[[c for c in feature_df.columns if "return" not in c.lower()]]
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
-print(f"\nFeature rows after engineering: {len(X):,}")
+print(
+    f"\nFeature rows after engineering: {len(X):,} "
+    f"(from labeled rows: {len(labeled_df):,})"
+)
 
 # Remove constant columns that provide no predictive signal
 X, constant_cols = drop_constant_columns(X)
@@ -150,6 +155,10 @@ if constant_cols:
 
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
+available_targets = df_targets.dropna(how="all").shape[0]
+print(
+    f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
+)
 
 # 11. Train multi-horizon models with XGBoost classifiers
 pipelines, accuracies = train_xgboost_multi_horizon(X, df_targets)

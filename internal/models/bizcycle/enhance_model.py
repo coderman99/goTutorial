@@ -13,6 +13,9 @@ except Exception:  # pragma: no cover - optional dependency
     shap = None
 
 try:
+    from lightgbm import LGBMClassifier
+
+try:
     from xgboost import XGBClassifier
 
     _XGBOOST_AVAILABLE = True
@@ -81,12 +84,12 @@ def to_wide_monthly(df_long):
 
 
 # ---- Feature engineering ----
-def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
+def make_features(wide, base_lags=(1, 3)):
     """
     Build a compact, leakage-safe feature set.
 
     - Standardize macro indicators with Z-scores.
-    - Keep only raw returns plus a few lags (no rolling/pct noise).
+    - Remove stock-market return features to avoid leakage from SP500 labels.
     - Limit lagged indicators to trim the engineered feature count.
     """
 
@@ -109,20 +112,13 @@ def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
 
     features = pd.DataFrame(index=X.index)
 
-    # Preserve standardized indicators (excluding returns which get special handling)
-    return_col = "returns" if "returns" in X.columns else None
-    indicator_cols = [c for c in X.columns if c != return_col]
+    # Preserve standardized indicators while explicitly excluding any return-like columns
+    indicator_cols = [c for c in X.columns if "return" not in c.lower()]
     features = pd.concat([features, X[indicator_cols]], axis=1)
 
     for lag in base_lags:
         lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
         features = pd.concat([features, lagged], axis=1)
-
-    # Add return features only after resampled alignment
-    if return_col:
-        features["returns"] = wide[return_col]
-        for lag in return_lags:
-            features[f"returns_lag{lag}"] = wide[return_col].shift(lag)
 
     features = features.dropna(how="all")
     return features
@@ -193,6 +189,9 @@ def _fit_xgboost(X, y):
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
 
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
+
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
     X_filled = X_encoded.ffill()
@@ -225,24 +224,18 @@ def _fit_xgboost(X, y):
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
-        sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
 
-        # scale_pos_weight is primarily for binary tasks; we provide a balanced
-        # ratio here to honor class imbalance without changing the multi-class objective.
-        imbalance_ratio = float(class_counts.max() / class_counts.min()) if len(class_counts) > 1 else 1.0
-
-        model = XGBClassifier(
-            n_estimators=300,
-            max_depth=3,
+        model = LGBMClassifier(
+            n_estimators=400,
+            num_leaves=31,
+            max_depth=-1,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
-            eval_metric="mlogloss",
-            objective="multi:softprob",
+            objective="multiclass",
+            class_weight=class_weight,
             random_state=42,
-            scale_pos_weight=imbalance_ratio,
-            tree_method="hist",
-            verbosity=0,
+            importance_type="gain",
         )
 
         if X_val is not None and y_val is not None:
@@ -252,7 +245,7 @@ def _fit_xgboost(X, y):
                 y_train,
                 sample_weight=sample_weight,
                 eval_set=[(X_val, y_val)],
-                sample_weight_eval_set=[eval_sample_weight],
+                eval_metric="multi_logloss",
                 verbose=False,
             )
         else:
@@ -274,7 +267,7 @@ def _fit_xgboost(X, y):
     }
 
 
-def train_xgboost_multi_horizon(
+def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -423,12 +416,10 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         X_encoded, _ = _encode_categoricals(X, encoders)
 
-        raw_pred = estimator.predict(X_encoded)
-        if raw_pred.ndim == 2:  # XGBoost with multi:softprob returns probability matrix
-            proba = raw_pred[0]
-        elif hasattr(estimator, "predict_proba"):
+        if hasattr(estimator, "predict_proba"):
             proba = estimator.predict_proba(X_encoded)[0]
         else:
+            raw_pred = estimator.predict(X_encoded)
             proba = np.zeros(len(label_encoder.classes_))
             proba[int(raw_pred[0])] = 1.0
 
@@ -437,13 +428,12 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        booster = getattr(estimator, "get_booster", lambda: None)()
+        booster = getattr(estimator, "booster_", None)
         if booster is not None:
-            raw_importance = booster.get_score(importance_type="gain")
-            if raw_importance and all(k.startswith("f") for k in raw_importance):
-                feature_importances = [raw_importance.get(f"f{i}", 0.0) for i in range(len(expected_cols))]
-            else:
-                feature_importances = [raw_importance.get(col, 0.0) for col in expected_cols]
+            gain_importance = booster.feature_importance(importance_type="gain")
+            feature_names = booster.feature_name()
+            importance_map = {name: score for name, score in zip(feature_names, gain_importance)}
+            feature_importances = [importance_map.get(col, 0.0) for col in expected_cols]
         else:
             feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
