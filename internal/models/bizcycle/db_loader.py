@@ -15,6 +15,20 @@ from sqlalchemy import create_engine
 from .config import DATABASE_URL
 
 
+KEY_INDICATORS = {
+    "Unemployment",
+    "PMI",
+    "IP",
+    "CPI",
+    "Housing starts",
+    "Yield curve",
+    "Leading indicators index",
+    "Credit spreads",
+    "NFIB sentiment",
+    "M2 YoY",
+}
+
+
 def _get_engine():
     if not DATABASE_URL:
         return None
@@ -115,6 +129,29 @@ def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
     return long_df.dropna(subset=["value"])
 
 
+def _append_missing_macro_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure the returned indicator frame always includes the key macro set."""
+
+    if "name" not in df.columns:
+        return df
+
+    present = set(df["name"].unique())
+    missing = KEY_INDICATORS - present
+    if not missing:
+        return df
+
+    # Use the packaged SP500 history to synthesize proxies when the database
+    # does not provide all macro indicators. Filter to only the missing set so
+    # real DB columns are left untouched.
+    spx_df = _load_local_sp500()
+    synthetic = _build_sample_indicators(spx_df)
+    synthetic = synthetic[synthetic["name"].isin(missing)]
+
+    combined = pd.concat([df, synthetic], ignore_index=True)
+    combined = combined.sort_values("timestamp")
+    return combined
+
+
 def load_indicator_data():
     """Load indicator data from the database or local CSV fallback."""
 
@@ -125,12 +162,14 @@ def load_indicator_data():
 
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.sort_values("timestamp")
+        df = _append_missing_macro_indicators(df)
         # Keep timestamp as both column and index for consistent downstream
         # merges (e.g., YieldCurve alignment) without truncating history.
         return df.set_index("timestamp", drop=False)
 
     spx_df = _load_local_sp500()
     fallback = _build_sample_indicators(spx_df)
+    fallback = _append_missing_macro_indicators(fallback)
     return fallback.set_index("timestamp", drop=False)
 
 
