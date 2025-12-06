@@ -8,12 +8,13 @@ from sklearn.feature_selection import mutual_info_classif
 import os
 
 try:
-    from xgboost import XGBClassifier
-    _XGB_AVAILABLE = True
+    from catboost import CatBoostClassifier
+
+    _CATBOOST_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _XGB_AVAILABLE = False
+    _CATBOOST_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -156,7 +157,7 @@ def _screen_features_by_importance(X, y, max_features=150, min_score=0.0):
 
     return X[selected], score_series
 
-# ---- LightGBM helpers ----
+# ---- CatBoost helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     """Return train/validation splits preserving time order for early stopping."""
 
@@ -172,36 +173,32 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_xgb(X, y):
-    """Fit an XGBoost classifier with time-aware validation for early stopping."""
+def _fit_catboost(X, y):
+    """Fit a CatBoost classifier with time-aware validation for early stopping."""
 
-    # Ensure no missing values during training
     X_filled = X.ffill().bfill()
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
 
-    # Screen for the most informative features to reduce noise and training cost
     max_feats = max(20, min(200, X_filled.shape[1]))
     X_selected, feature_scores = _screen_features_by_importance(
         X_filled, y_encoded, max_features=max_feats, min_score=0.0
     )
 
-    if _XGB_AVAILABLE:
-        model = XGBClassifier(
-            n_estimators=800,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            max_depth=4,
-            objective="multi:softprob",
-            eval_metric="mlogloss",
-            random_state=42,
-            n_jobs=-1,
-        )
+    X_train, y_train, X_val, y_val = _split_for_early_stopping(
+        X_selected, pd.Series(y_encoded), val_fraction=0.2
+    )
 
-        X_train, y_train, X_val, y_val = _split_for_early_stopping(
-            X_selected, pd.Series(y_encoded), val_fraction=0.2
+    if _CATBOOST_AVAILABLE:
+        model = CatBoostClassifier(
+            iterations=800,
+            learning_rate=0.05,
+            depth=6,
+            loss_function="MultiClass",
+            eval_metric="TotalF1",
+            random_seed=42,
+            verbose=False,
         )
 
         if X_val is not None and y_val is not None:
@@ -209,11 +206,12 @@ def _fit_xgb(X, y):
                 X_train,
                 y_train,
                 eval_set=[(X_val, y_val)],
+                use_best_model=True,
                 verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded)
-    else:
+            model.fit(X_selected, y_encoded, verbose=False)
+    else:  # pragma: no cover - fallback for environments without catboost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -227,7 +225,7 @@ def _fit_xgb(X, y):
         "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
-def train_xgboost_multi_horizon(
+def train_catboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -252,17 +250,14 @@ def train_xgboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_xgb(X, y)
+        pipeline = _fit_catboost(X, y)
 
-        model_path = os.path.join(model_dir, f"xgb_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"catboost_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
 
     return pipelines, accuracies
-
-# Backwards-compatible alias for older callers
-train_lightgbm_multi_horizon = train_xgboost_multi_horizon
 # ---- Predict + explain function for a single latest row ----
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
@@ -367,7 +362,10 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
+        if hasattr(estimator, "get_feature_importance"):
+            feature_importances = estimator.get_feature_importance()
+        else:
+            feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
         
         top_features, top_indicators = _summarize_feature_impacts(
@@ -382,3 +380,8 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         }
 
     return results
+
+
+# Backwards-compatible aliases for callers expecting earlier names
+train_lightgbm_multi_horizon = train_catboost_multi_horizon
+train_xgboost_multi_horizon = train_catboost_multi_horizon
