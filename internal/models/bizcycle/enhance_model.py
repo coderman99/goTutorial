@@ -1,19 +1,20 @@
 # enhance_model.py
 import joblib
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
-from sklearn.feature_selection import mutual_info_classif
 import os
+import pandas as pd
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
 
 try:
-    from xgboost import XGBClassifier
-    _XGB_AVAILABLE = True
+    from lightgbm import LGBMClassifier
+
+    _LIGHTGBM_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _XGB_AVAILABLE = False
+    _LIGHTGBM_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -69,75 +70,60 @@ def to_wide_monthly(df_long):
         aggfunc="mean",
     )
 
-    wide = wide.sort_index().ffill().bfill()
+    wide = wide.sort_index().ffill()
 
     return wide
 
 
 # ---- Feature engineering ----
-def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
+def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
     """
-    wide: DataFrame indexed by month with indicator columns
-    returns: X (features DF)
+    Build a compact, leakage-safe feature set.
+
+    - Standardize macro indicators with Z-scores.
+    - Keep only raw returns plus a few lags (no rolling/pct noise).
+    - Limit lagged indicators to trim the engineered feature count.
     """
-    X = wide.copy()
-    # Remove or coerce non-numeric columns before creating percentage changes
+
+    wide = wide.copy()
+    wide = wide.loc[~wide.index.duplicated()].sort_index()
+
+    # Keep only numeric columns
+    numeric_cols = [c for c in wide.columns if pd.api.types.is_numeric_dtype(wide[c])]
+    X = wide[numeric_cols].copy()
+
+    # Standardize each indicator so scales are comparable
     for col in list(X.columns):
-        if not pd.api.types.is_numeric_dtype(X[col]):
-            coerced = pd.to_numeric(X[col], errors="coerce")
-            if coerced.notna().any():
-                X[col] = coerced
-            else:
-                X = X.drop(columns=col)
+        std = X[col].std()
+        if std is None or std == 0 or pd.isna(std):
+            # Drop constant/non-informative columns early
+            X = X.drop(columns=col)
+            continue
+        mean = X[col].mean()
+        X[col] = (X[col] - mean) / std
 
-    # percent changes for level indicators can help
-    # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
-    numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
-    for col in numeric_cols:
-        pct = X[col].pct_change()
-        # clip pct_change extremes so a single bad tick does not dominate scale
-        pct = pct.clip(lower=-5, upper=5)
-        X[f"{col}_pct"] = pct
+    features = pd.DataFrame(index=X.index)
 
-    # short and medium smoothing to emphasize persistent trends over noise
-    for window in (3, 6):
-        smoothed = X[numeric_cols].rolling(window=window, min_periods=1).mean()
-        smoothed = smoothed.add_suffix(f"_roll{window}")
-        X = pd.concat([X, smoothed], axis=1)
+    # Preserve standardized indicators (excluding returns which get special handling)
+    return_col = "returns" if "returns" in X.columns else None
+    indicator_cols = [c for c in X.columns if c != return_col]
+    features = pd.concat([features, X[indicator_cols]], axis=1)
 
-    # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
-    sp_name_candidates = ['StockMarketIndex', 'SP500', 'SPX', 'sp500', 'StockMarketIndex']
-    sp_col = None
-    for p in sp_name_candidates:
-        if p in X.columns:
-            sp_col = p
-            break
-    if sp_col and add_3m_smooth:
-        X['sp_3m_smooth'] = X[sp_col].pct_change(3)
+    for lag in base_lags:
+        lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
+        features = pd.concat([features, lagged], axis=1)
 
-    # Lag features
-    for lag in add_lags:
-        X_lag = X.shift(lag).add_suffix(f"_lag{lag}")
-        X = pd.concat([X, X_lag], axis=1)
+    # Add return features only after resampled alignment
+    if return_col:
+        features["returns"] = wide[return_col]
+        for lag in return_lags:
+            features[f"returns_lag{lag}"] = wide[return_col].shift(lag)
 
-    # Drop rows with too many missing values
-    X = X.dropna(thresh=int(X.shape[1]*0.5))
-
-    # Remove columns with >50% NaN or constant
-    X = X.loc[:, X.isna().mean() < 0.5]
-    # Drop near-constant columns that add noise but little signal
-    constant_mask = X.nunique(dropna=False) <= 1
-    if constant_mask.any():
-        X = X.loc[:, ~constant_mask]
-    # Replace infinities from pct_change or other transforms
-    X = X.replace([np.inf, -np.inf], np.nan)
-    # final fill
-    X = X.ffill().bfill()
-
-    return X
+    features = features.dropna(how="all")
+    return features
 
 
-def _screen_features_by_importance(X, y, max_features=150, min_score=0.0):
+def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
     """Select top predictive features using mutual information.
 
     The expanded Leading indicator set increases the number of columns and
@@ -172,36 +158,36 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_xgb(X, y):
-    """Fit an XGBoost classifier with time-aware validation for early stopping."""
+def _fit_lightgbm(X, y):
+    """Fit a LightGBM classifier with time-aware validation for early stopping."""
 
-    # Ensure no missing values during training
-    X_filled = X.ffill().bfill()
+    X_filled = X.ffill()
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
 
-    # Screen for the most informative features to reduce noise and training cost
-    max_feats = max(20, min(200, X_filled.shape[1]))
+    max_feats = max(20, min(60, X_filled.shape[1]))
     X_selected, feature_scores = _screen_features_by_importance(
         X_filled, y_encoded, max_features=max_feats, min_score=0.0
     )
 
-    if _XGB_AVAILABLE:
-        model = XGBClassifier(
-            n_estimators=800,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            max_depth=4,
-            objective="multi:softprob",
-            eval_metric="mlogloss",
-            random_state=42,
-            n_jobs=-1,
-        )
+    X_train, y_train, X_val, y_val = _split_for_early_stopping(
+        X_selected, pd.Series(y_encoded), val_fraction=0.2
+    )
 
-        X_train, y_train, X_val, y_val = _split_for_early_stopping(
-            X_selected, pd.Series(y_encoded), val_fraction=0.2
+    if _LIGHTGBM_AVAILABLE:
+        # Class balancing for imbalanced macro cycles
+        class_counts = pd.Series(y_encoded).value_counts()
+        total = class_counts.sum()
+        class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+        model = LGBMClassifier(
+            n_estimators=800,
+            num_leaves=63,
+            learning_rate=0.05,
+            objective="multiclass",
+            random_state=42,
+            verbosity=-1,
+            class_weight=class_weight,
         )
 
         if X_val is not None and y_val is not None:
@@ -209,11 +195,11 @@ def _fit_xgb(X, y):
                 X_train,
                 y_train,
                 eval_set=[(X_val, y_val)],
-                verbose=False,
+                eval_metric="multi_logloss",
             )
         else:
             model.fit(X_selected, y_encoded)
-    else:
+    else:  # pragma: no cover - fallback for environments without lightgbm
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -227,7 +213,7 @@ def _fit_xgb(X, y):
         "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
-def train_xgboost_multi_horizon(
+def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -252,17 +238,14 @@ def train_xgboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_xgb(X, y)
+        pipeline = _fit_lightgbm(X, y)
 
-        model_path = os.path.join(model_dir, f"xgb_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
 
     return pipelines, accuracies
-
-# Backwards-compatible alias for older callers
-train_lightgbm_multi_horizon = train_xgboost_multi_horizon
 # ---- Predict + explain function for a single latest row ----
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
@@ -367,7 +350,10 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
+        if hasattr(estimator, "get_feature_importance"):
+            feature_importances = estimator.get_feature_importance()
+        else:
+            feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
         
         top_features, top_indicators = _summarize_feature_impacts(
@@ -382,3 +368,8 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
         }
 
     return results
+
+
+# Backwards-compatible aliases for callers expecting earlier names
+train_catboost_multi_horizon = train_lightgbm_multi_horizon
+train_xgboost_multi_horizon = train_lightgbm_multi_horizon
