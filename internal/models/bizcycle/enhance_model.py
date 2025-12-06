@@ -8,6 +8,11 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
 try:
+    import shap
+except Exception:  # pragma: no cover - optional dependency
+    shap = None
+
+try:
     from lightgbm import LGBMClassifier
 
     _LIGHTGBM_AVAILABLE = True
@@ -76,12 +81,12 @@ def to_wide_monthly(df_long):
 
 
 # ---- Feature engineering ----
-def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
+def make_features(wide, base_lags=(1, 3)):
     """
     Build a compact, leakage-safe feature set.
 
     - Standardize macro indicators with Z-scores.
-    - Keep only raw returns plus a few lags (no rolling/pct noise).
+    - Remove stock-market return features to avoid leakage from SP500 labels.
     - Limit lagged indicators to trim the engineered feature count.
     """
 
@@ -104,20 +109,13 @@ def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
 
     features = pd.DataFrame(index=X.index)
 
-    # Preserve standardized indicators (excluding returns which get special handling)
-    return_col = "returns" if "returns" in X.columns else None
-    indicator_cols = [c for c in X.columns if c != return_col]
+    # Preserve standardized indicators while explicitly excluding any return-like columns
+    indicator_cols = [c for c in X.columns if "return" not in c.lower()]
     features = pd.concat([features, X[indicator_cols]], axis=1)
 
     for lag in base_lags:
         lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
         features = pd.concat([features, lagged], axis=1)
-
-    # Add return features only after resampled alignment
-    if return_col:
-        features["returns"] = wide[return_col]
-        for lag in return_lags:
-            features[f"returns_lag{lag}"] = wide[return_col].shift(lag)
 
     features = features.dropna(how="all")
     return features
@@ -142,6 +140,30 @@ def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
 
     return X[selected], score_series
 
+
+def _encode_categoricals(X_df, fitted_encoders=None):
+    """Encode categorical columns with LabelEncoder, returning encoded frame + encoders."""
+
+    encoders = fitted_encoders or {}
+    X_encoded = X_df.copy()
+
+    cat_cols = [
+        c
+        for c in X_encoded.columns
+        if X_encoded[c].dtype == "object" or pd.api.types.is_categorical_dtype(X_encoded[c])
+    ]
+
+    for col in cat_cols:
+        enc = encoders.get(col)
+        if enc is None:
+            enc = LabelEncoder()
+            enc.fit(X_encoded[col].astype(str).fillna("<NA>"))
+            encoders[col] = enc
+
+        X_encoded[col] = enc.transform(X_encoded[col].astype(str).fillna("<NA>"))
+
+    return X_encoded, encoders
+
 # ---- CatBoost helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     """Return train/validation splits preserving time order for early stopping."""
@@ -161,9 +183,12 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 def _fit_lightgbm(X, y):
     """Fit a LightGBM classifier with time-aware validation for early stopping."""
 
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
+
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
-    X_filled = X.ffill()
+    X_filled = X_encoded.ffill()
     if isinstance(y, pd.Series):
         y_aligned = y.copy()
     else:
@@ -193,14 +218,18 @@ def _fit_lightgbm(X, y):
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+
         model = LGBMClassifier(
-            n_estimators=800,
-            num_leaves=63,
+            n_estimators=400,
+            num_leaves=31,
+            max_depth=-1,
             learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
             objective="multiclass",
-            random_state=42,
-            verbosity=-1,
             class_weight=class_weight,
+            random_state=42,
+            importance_type="gain",
         )
 
         if X_val is not None and y_val is not None:
@@ -209,6 +238,7 @@ def _fit_lightgbm(X, y):
                 y_train,
                 eval_set=[(X_val, y_val)],
                 eval_metric="multi_logloss",
+                verbose=False,
             )
         else:
             model.fit(X_selected, y_encoded)
@@ -224,8 +254,11 @@ def _fit_lightgbm(X, y):
         "label_encoder": label_encoder,
         "feature_order": list(X_selected.columns),
         "feature_scores": feature_scores.to_dict(),
+        "feature_encoders": {k: v.classes_.tolist() for k, v in feature_encoders.items()},
         "train_accuracy": float(train_accuracy),
     }
+
+
 def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
@@ -263,9 +296,17 @@ def train_lightgbm_multi_horizon(
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
+    # Ensure importances are 1-D and aligned with features
+    impacts_array = np.asarray(importances)
+    if impacts_array.ndim > 1:
+        impacts_array = impacts_array.reshape(-1, impacts_array.shape[-1]).mean(axis=0)
+
+    if impacts_array.size != len(feature_list):
+        impacts_array = np.resize(impacts_array, len(feature_list))
+
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(importances, index=feature_list)
+        pd.Series(impacts_array, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
@@ -352,25 +393,67 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         label_encoder = pipeline["label_encoder"]
         expected_cols = pipeline["feature_order"]
+        fitted_feature_encs = pipeline.get("feature_encoders", {})
 
-        # Reindex latest_row to match training order
+        # Reindex latest_row to match training order and encode categoricals consistently
         X = latest_row.reindex(columns=expected_cols)
         X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
-        proba = model.predict_proba(X)[0]
+        # Rehydrate encoders
+        encoders = {}
+        for col, classes in fitted_feature_encs.items():
+            enc = LabelEncoder()
+            enc.classes_ = np.array(classes)
+            encoders[col] = enc
+
+        X_encoded, _ = _encode_categoricals(X, encoders)
+
+        if hasattr(estimator, "predict_proba"):
+            proba = estimator.predict_proba(X_encoded)[0]
+        else:
+            raw_pred = estimator.predict(X_encoded)
+            proba = np.zeros(len(label_encoder.classes_))
+            proba[int(raw_pred[0])] = 1.0
+
         pred_idx = int(np.argmax(proba))
         pred_label = label_encoder.inverse_transform([pred_idx])[0]
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        if hasattr(estimator, "get_feature_importance"):
-            feature_importances = estimator.get_feature_importance()
+        booster = getattr(estimator, "booster_", None)
+        if booster is not None:
+            gain_importance = booster.feature_importance(importance_type="gain")
+            feature_names = booster.feature_name()
+            importance_map = {name: score for name, score in zip(feature_names, gain_importance)}
+            feature_importances = [importance_map.get(col, 0.0) for col in expected_cols]
         else:
             feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
-        
+        # Prefer SHAP explanations when available
+        shap_impacts = None
+        if shap is not None and hasattr(estimator, "predict"):
+            try:
+                explainer = shap.TreeExplainer(estimator)
+                shap_values = explainer.shap_values(X_encoded)
+                if isinstance(shap_values, list):
+                    shap_array = np.asarray(shap_values[pred_idx][0])
+                elif isinstance(shap_values, np.ndarray):
+                    if shap_values.ndim == 3:  # (rows, classes, features)
+                        shap_array = shap_values[0, pred_idx, :]
+                    elif shap_values.ndim == 2:  # (rows, features)
+                        shap_array = shap_values[0]
+                    else:
+                        shap_array = shap_values.squeeze()
+                else:
+                    shap_array = None
+                shap_impacts = shap_array
+            except Exception:
+                shap_impacts = None
+
+        impacts_for_ranking = shap_impacts if shap_impacts is not None else feature_importances
+
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols, feature_importances, top_n
+            expected_cols, impacts_for_ranking, top_n
         )
 
         results[horizon] = {
