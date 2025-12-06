@@ -35,6 +35,16 @@ env_path = Path(__file__).resolve().parents[3] / "internal" / ".env"
 if load_dotenv and env_path.exists():
     load_dotenv(env_path)
 
+
+def drop_constant_columns(df: pd.DataFrame):
+    """Remove columns that carry no signal before model training."""
+
+    nunique = df.nunique(dropna=False)
+    constant_cols = nunique[nunique <= 1].index.tolist()
+    if constant_cols:
+        df = df.drop(columns=constant_cols)
+    return df, constant_cols
+
 # ---------------------------------------------
 # 1. Load indicator data
 # ---------------------------------------------
@@ -125,6 +135,11 @@ composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")
 feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
+
+# Remove constant columns that provide no predictive signal
+X, constant_cols = drop_constant_columns(X)
+if constant_cols:
+    print(f"Dropped constant columns: {constant_cols}")
 
 # 10. Build targets aligned with X
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
