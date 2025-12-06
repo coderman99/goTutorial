@@ -1,6 +1,8 @@
 # preprocess.py
 import pandas as pd
 
+from internal.models.bizcycle.indicator_definitions import KEY_INDICATORS
+
 CANONICAL_INDICATOR_ALIASES = {
     "unemployment rate": "Unemployment",
     "unemployment": "Unemployment",
@@ -31,6 +33,37 @@ def _canonicalize_indicator_name(name: str) -> str:
 
     key = name.strip().lower()
     return CANONICAL_INDICATOR_ALIASES.get(key, name)
+
+
+def backfill_missing_key_indicators(df: pd.DataFrame, freq: str = "W-FRI") -> pd.DataFrame:
+    """Ensure the wide feature table always includes every economic indicator.
+
+    The database contains ~30+ macro/market series defined alongside the Go
+    structs. When some series have sparse history, we still want the model to
+    see a stable column set so lagged features and composite scores align
+    correctly. This helper adds missing indicator columns (filled with NA) and
+    reindexes to the requested frequency to keep weekly alignment.
+    """
+
+    wide = df.copy()
+    wide = wide.loc[~wide.index.duplicated()].sort_index()
+
+    if freq and not wide.empty:
+        full_index = pd.date_range(wide.index.min(), wide.index.max(), freq=freq)
+        wide = wide.reindex(full_index)
+
+    missing = [col for col in KEY_INDICATORS if col not in wide.columns]
+    for col in missing:
+        wide[col] = pd.NA
+
+    # Preserve original column order while appending the newly added indicators
+    # in a deterministic way for downstream reproducibility.
+    existing_cols = [c for c in df.columns if c in wide.columns]
+    appended_cols = sorted(set(missing))
+    ordered_cols = existing_cols + [c for c in appended_cols if c not in existing_cols]
+    wide = wide[ordered_cols]
+
+    return wide
 
 def preprocess_monthly(df):
     """
