@@ -13,16 +13,31 @@ from sklearn.preprocessing import LabelEncoder
 
 TARGETS = ["cycle_1m", "cycle_3m", "cycle_6m"]
 
+
+def _encode_categoricals(df):
+    """Encode object/categorical columns with LabelEncoder."""
+
+    encoders = {}
+    df_encoded = df.copy()
+    cat_cols = [
+        c
+        for c in df_encoded.columns
+        if df_encoded[c].dtype == "object" or df_encoded[c].dtype.name == "category"
+    ]
+
+    for col in cat_cols:
+        enc = LabelEncoder()
+        enc.fit(df_encoded[col].astype(str).fillna("<NA>"))
+        df_encoded[col] = enc.transform(df_encoded[col].astype(str).fillna("<NA>"))
+        encoders[col] = enc
+
+    return df_encoded, encoders
+
 def make_features(wide_df):
     df = wide_df.copy()
 
     # forward/backward fill
     df = df.ffill().bfill()
-
-    # Create returns
-    df["sp500_ret_1m"] = df["sp500"].pct_change()
-    df["sp500_ret_3m"] = df["sp500"].pct_change(3)
-    df["sp500_ret_6m"] = df["sp500"].pct_change(6)
 
     # Lag all indicators so model does not peek ahead
     for col in df.columns:
@@ -63,17 +78,22 @@ def prepare_features(df):
         encoders[t] = enc
 
     # ---- Select feature columns (everything except targets) ----
-    X = df.drop(columns=TARGETS)
+    X_raw = df.drop(columns=TARGETS)
     y = df[TARGETS].copy()
 
+    # Encode any categorical feature columns
+    X_encoded, _ = _encode_categoricals(X_raw)
+
     # Fill missing numeric values
-    X = X.ffill().bfill()
+    X = X_encoded.ffill().bfill()
 
     return X, y, encoders
 
 def train_model(df):
     y = df["cycle_phase"]
     X = df.drop(columns=["cycle_phase"])
+
+    X, _ = _encode_categoricals(X)
 
     X = X.fillna(method="ffill").fillna(method="bfill")
 
@@ -85,12 +105,23 @@ def train_model(df):
     )
 
     if _LIGHTGBM_AVAILABLE:
+        class_counts = np.bincount(y_encoded)
+        class_weight = {
+            cls: class_counts.sum() / (len(class_counts) * cnt)
+            for cls, cnt in enumerate(class_counts) if cnt > 0
+        }
+
         model = LGBMClassifier(
-            n_estimators=800,
-            num_leaves=63,
+            n_estimators=400,
+            num_leaves=31,
+            max_depth=-1,
             learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
             objective="multiclass",
+            class_weight=class_weight,
             random_state=42,
+            importance_type="gain",
         )
         model.fit(
             X_train,
@@ -141,12 +172,23 @@ def train_multi_horizon(df):
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
         if _LIGHTGBM_AVAILABLE:
+            class_counts = y_train.value_counts()
+            class_weight = {
+                cls: class_counts.sum() / (len(class_counts) * cnt)
+                for cls, cnt in class_counts.items()
+            }
+
             model = LGBMClassifier(
-                n_estimators=800,
-                num_leaves=63,
+                n_estimators=400,
+                num_leaves=31,
+                max_depth=-1,
                 learning_rate=0.05,
+                subsample=0.8,
+                colsample_bytree=0.8,
                 objective="multiclass",
+                class_weight=class_weight,
                 random_state=42,
+                importance_type="gain",
             )
             model.fit(
                 X_train,
@@ -155,28 +197,6 @@ def train_multi_horizon(df):
                 eval_metric="multi_logloss",
                 verbose=False,
             )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(X_train, y_train, verbose=False)
         else:
             model = GradientBoostingClassifier(random_state=42)
 
