@@ -19,6 +19,7 @@ from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
 from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
+    KEY_INDICATORS,
     to_wide_monthly,
     make_features,
     train_xgboost_multi_horizon,
@@ -42,6 +43,26 @@ def drop_constant_columns(df: pd.DataFrame):
     if constant_cols:
         df = df.drop(columns=constant_cols)
     return df, constant_cols
+
+
+def validate_key_indicator_coverage(df: pd.DataFrame):
+    """Ensure all critical macro indicators are present before training."""
+
+    present = set()
+    for col in df.columns:
+        for key in KEY_INDICATORS:
+            if col.startswith(key):
+                present.add(key)
+
+    missing = sorted(KEY_INDICATORS - present)
+    if missing:
+        raise ValueError(
+            "Missing key macro indicators. Expected all of these columns to be present: "
+            f"{sorted(KEY_INDICATORS)}. Missing: {missing}. "
+            "Verify your indicator ingestion/merging pipeline so these series reach the wide feature set."
+        )
+
+    print("\nKey macro indicators confirmed:", sorted(present))
 
 # ---------------------------------------------
 # 1. Load indicator data
@@ -152,6 +173,8 @@ feature_df = feature_df[[c for c in feature_df.columns if "return" not in c.lowe
 
 print("\nBase feature columns prior to lagging (count={}):".format(len(feature_df.columns)))
 print(sorted(feature_df.columns))
+
+validate_key_indicator_coverage(feature_df)
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 print(

@@ -58,13 +58,36 @@ def _normalize_sp500_monthly(df: pd.DataFrame, value_col: str = "sp500") -> pd.D
 
 def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
     """Generate a small set of indicators derived from S&P 500 levels."""
+    # Base level and growth proxies that are non-leaking with respect to the
+    # cycle labels (which are derived from future returns).
+    pct_change = spx_df["sp500"].pct_change()
+    rolling_change = pct_change.rolling(3).mean()
+    rolling_vol = pct_change.rolling(3).std()
 
-    indicators = pd.DataFrame({
-        "timestamp": spx_df["timestamp"],
+    synthetic_macro = {
+        # Leading indicators should move with equity momentum without exposing
+        # the exact return calculation used for labels.
+        "Leading indicators index": rolling_change.mul(100),
+        "PMI": rolling_change.mul(80).add(50),
+        "NFIB sentiment": rolling_change.mul(60).add(95),
+        "Yield curve": pct_change.rolling(6).mean().mul(10),
+        "Credit spreads": rolling_vol.mul(150),
+        # Coincident/lagging indicators are slower moving transformations.
+        "Unemployment": rolling_vol.mul(30).add(4.5),
+        "CPI": pct_change.rolling(6).mean().abs().mul(100),
+        "IP": pct_change.rolling(4).mean().mul(120),
+        "Housing starts": pct_change.rolling(5).mean().mul(140),
+        "M2 YoY": pct_change.rolling(12).sum().mul(100),
+        # Legacy stock features kept for backwards compatibility but filtered
+        # out before training to avoid leakage.
         "StockMarketIndex": spx_df["sp500"],
-        "StockMarketMomentum": spx_df["sp500"].pct_change() * 100,
-        "StockMarketVolatility": spx_df["sp500"].pct_change().rolling(3).std(),
-    })
+        "StockMarketMomentum": pct_change.mul(100),
+        "StockMarketVolatility": rolling_vol,
+    }
+
+    indicators = pd.DataFrame({"timestamp": spx_df["timestamp"]})
+    for name, series in synthetic_macro.items():
+        indicators[name] = series
 
     long_df = indicators.melt(
         id_vars=["timestamp"],
@@ -73,9 +96,19 @@ def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
     )
 
     long_df["series_id"] = long_df["name"].str.upper()
-    long_df["indicator_cat"] = long_df["name"].apply(
-        lambda x: "Leading" if "Momentum" in x or "Index" in x else "Lagging"
-    )
+
+    def _categorize(name: str) -> str:
+        if name in {"Leading indicators index", "PMI", "Yield curve", "Credit spreads"}:
+            return "Leading"
+        if name in {"Unemployment", "CPI", "IP", "Housing starts"}:
+            return "Lagging"
+        if name in {"NFIB sentiment", "M2 YoY"}:
+            return "Coincident"
+        # Stock-derived proxies are treated as Leading but later filtered out
+        # of the training feature set.
+        return "Leading"
+
+    long_df["indicator_cat"] = long_df["name"].apply(_categorize)
     long_df["timestamp"] = pd.to_datetime(long_df["timestamp"], utc=True)
     long_df["id"] = range(1, len(long_df) + 1)
 

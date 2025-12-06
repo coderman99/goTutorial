@@ -1,6 +1,37 @@
 # preprocess.py
 import pandas as pd
 
+CANONICAL_INDICATOR_ALIASES = {
+    "unemployment rate": "Unemployment",
+    "unemployment": "Unemployment",
+    "pmi": "PMI",
+    "purchasing managers index": "PMI",
+    "industrial production": "IP",
+    "ip": "IP",
+    "cpi": "CPI",
+    "inflation": "CPI",
+    "consumer price index": "CPI",
+    "housing starts": "Housing starts",
+    "yield curve": "Yield curve",
+    "10y-2y spread": "Yield curve",
+    "credit spreads": "Credit spreads",
+    "credit spread": "Credit spreads",
+    "leading indicators": "Leading indicators index",
+    "leading index": "Leading indicators index",
+    "nfib sentiment": "NFIB sentiment",
+    "nfib": "NFIB sentiment",
+    "m2 yoy": "M2 YoY",
+    "m2": "M2 YoY",
+}
+
+
+def _canonicalize_indicator_name(name: str) -> str:
+    if not isinstance(name, str):
+        return name
+
+    key = name.strip().lower()
+    return CANONICAL_INDICATOR_ALIASES.get(key, name)
+
 def preprocess_monthly(df):
     """
     Convert raw indicator rows into end-of-month monthly data.
@@ -33,6 +64,10 @@ def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
     # ensure tz-naive
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
+
+    # Normalize indicator naming so downstream pivots treat equivalent series
+    # (e.g., "Unemployment Rate" vs. "Unemployment") as the same column.
+    df["name"] = df["name"].apply(_canonicalize_indicator_name)
 
     # Sort before resampling to make "last" deterministic when multiple points
     # land in the same bucket (e.g., daily SP500 history vs. legacy monthly rows).
