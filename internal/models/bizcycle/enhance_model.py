@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - fallback
 
     XGBClassifier = None
 
+    return wide_df
 
 # ---- Helper: wide conversion for long-format indicator data ----
 def to_wide_monthly(df_long, freq="M"):
