@@ -16,27 +16,23 @@ def preprocess_monthly(df):
     # ensure tz-naive
     df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
 
-    # convert to end-of-month
-    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
-
-    # Sort so "keep='last'" is deterministic when removing duplicate months
-    # from newly appended history.
-    sort_cols = [c for c in ["timestamp", "name", "id"] if c in df.columns]
+    # Sort before resampling to make "last" deterministic when multiple points
+    # land in the same month (e.g., daily SP500 history vs. legacy monthly rows).
+    sort_cols = [c for c in ["name", "timestamp", "id"] if c in df.columns]
     df = df.sort_values(sort_cols, na_position="last")
 
-    # Remove duplicate monthly points per indicator, keeping the most recent
-    # record for that month instead of averaging conflicting duplicates.
-    df = df.drop_duplicates(subset=["timestamp", "name"], keep="last")
+    # Normalize to month-end using a per-indicator resample so we never
+    # overwrite earlier history when new data ranges are appended.
+    df = df.set_index("timestamp")
+    monthly = (
+        df.groupby("name")
+        .apply(lambda grp: grp.resample("M").last())
+        .reset_index(level=0)
+    )
 
-    # KEEP all information
-    # (1) group by timestamp + name
-    grouped = df.groupby(["timestamp", "name"])
-
-    monthly = grouped.agg({
-        "value": "mean",
-        "indicator_cat": "first",
-        "id": "first"
-    }).reset_index()
+    # Force month-end timestamps after resampling for consistent merging
+    monthly.index = monthly.index.to_period("M").to_timestamp("M")
+    monthly.index.name = "timestamp"
 
     category_map = {
         "Leading": 1,
@@ -52,7 +48,8 @@ def preprocess_monthly(df):
         .astype(int)
     )
 
-    # reindex to timestamp
-    monthly = monthly.set_index("timestamp")
+    # Ensure strict month-end ordering without clobbering earlier history
+    monthly = monthly[~monthly.index.duplicated(keep="last")]
+    monthly = monthly.sort_index()
 
     return monthly
