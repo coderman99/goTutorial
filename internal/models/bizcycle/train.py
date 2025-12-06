@@ -67,9 +67,10 @@ def validate_key_indicator_coverage(df: pd.DataFrame):
 # ---------------------------------------------
 # 1. Load indicator data
 # ---------------------------------------------
-# Allow callers to keep the full history by omitting the env var.
+# Default to 2005 to keep a reasonably modern sample; allow callers to override
+# via environment variable when a different cutoff is desired.
 EARLIEST_DATE = os.getenv("BIZCYCLE_EARLIEST_DATE")
-EARLIEST_DATE = pd.to_datetime(EARLIEST_DATE) if EARLIEST_DATE else None
+EARLIEST_DATE = pd.to_datetime(EARLIEST_DATE) if EARLIEST_DATE else pd.Timestamp("2005-01-01")
 
 df = load_indicator_data()
 print(f"Loaded indicator rows: {len(df):,}")
