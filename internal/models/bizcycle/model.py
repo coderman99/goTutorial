@@ -1,11 +1,11 @@
 try:
-    from lightgbm import LGBMClassifier
+    from xgboost import XGBClassifier
 
-    _LIGHTGBM_AVAILABLE = True
-except ImportError:  # pragma: no cover - fallback when lightgbm is unavailable
+    _XGBOOST_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when xgboost is unavailable
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LIGHTGBM_AVAILABLE = False
+    _XGBOOST_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -84,19 +84,22 @@ def train_model(df):
         X, y_encoded, test_size=0.2, shuffle=False
     )
 
-    if _LIGHTGBM_AVAILABLE:
-        model = LGBMClassifier(
+    if _XGBOOST_AVAILABLE:
+        model = XGBClassifier(
             n_estimators=800,
-            num_leaves=63,
+            max_depth=6,
             learning_rate=0.05,
-            objective="multiclass",
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="multi:softprob",
             random_state=42,
+            eval_metric="mlogloss",
+            tree_method="hist",
         )
         model.fit(
             X_train,
             y_train,
             eval_set=[(X_test, y_test)],
-            eval_metric="multi_logloss",
             verbose=False,
         )
     else:
@@ -140,43 +143,24 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        if _LIGHTGBM_AVAILABLE:
-            model = LGBMClassifier(
+        if _XGBOOST_AVAILABLE:
+            model = XGBClassifier(
                 n_estimators=800,
-                num_leaves=63,
+                max_depth=6,
                 learning_rate=0.05,
-                objective="multiclass",
+                subsample=0.8,
+                colsample_bytree=0.8,
+                objective="multi:softprob",
                 random_state=42,
+                eval_metric="mlogloss",
+                tree_method="hist",
             )
             model.fit(
                 X_train,
                 y_train,
                 eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
                 verbose=False,
             )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_test, y_test)],
-                eval_metric="multi_logloss",
-                verbose=False,
-            )
-            model.fit(X_train, y_train, verbose=False)
         else:
             model = GradientBoostingClassifier(random_state=42)
 
