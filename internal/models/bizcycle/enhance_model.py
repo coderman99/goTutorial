@@ -297,6 +297,10 @@ def _fit_xgboost(X, y):
     }
 
 
+# Backwards-compatible alias for callers that still import the previous name
+_fit_lightgbm = _fit_xgboost
+
+
 def train_xgboost_multi_horizon(
     df_features,
     df_targets,
