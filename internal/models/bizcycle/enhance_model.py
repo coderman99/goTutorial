@@ -196,18 +196,6 @@ def _fit_xgboost(X, y):
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
 
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
     X_filled = X_encoded.ffill()
@@ -240,6 +228,7 @@ def _fit_xgboost(X, y):
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+        train_sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
 
         model = LGBMClassifier(
             n_estimators=400,
@@ -259,13 +248,14 @@ def _fit_xgboost(X, y):
             model.fit(
                 X_train,
                 y_train,
-                sample_weight=sample_weight,
+                sample_weight=train_sample_weight,
                 eval_set=[(X_val, y_val)],
                 eval_metric="multi_logloss",
                 verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded, sample_weight=pd.Series(y_encoded).map(class_weight))
+            full_sample_weight = pd.Series(y_encoded).map(class_weight).to_numpy()
+            model.fit(X_selected, y_encoded, sample_weight=full_sample_weight)
     else:  # pragma: no cover - fallback for environments without xgboost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
