@@ -13,6 +13,26 @@ from sklearn.preprocessing import LabelEncoder
 
 TARGETS = ["cycle_1m", "cycle_3m", "cycle_6m"]
 
+
+def _encode_categoricals(df):
+    """Encode object/categorical columns with LabelEncoder."""
+
+    encoders = {}
+    df_encoded = df.copy()
+    cat_cols = [
+        c
+        for c in df_encoded.columns
+        if df_encoded[c].dtype == "object" or df_encoded[c].dtype.name == "category"
+    ]
+
+    for col in cat_cols:
+        enc = LabelEncoder()
+        enc.fit(df_encoded[col].astype(str).fillna("<NA>"))
+        df_encoded[col] = enc.transform(df_encoded[col].astype(str).fillna("<NA>"))
+        encoders[col] = enc
+
+    return df_encoded, encoders
+
 def make_features(wide_df):
     df = wide_df.copy()
 
@@ -63,17 +83,22 @@ def prepare_features(df):
         encoders[t] = enc
 
     # ---- Select feature columns (everything except targets) ----
-    X = df.drop(columns=TARGETS)
+    X_raw = df.drop(columns=TARGETS)
     y = df[TARGETS].copy()
 
+    # Encode any categorical feature columns
+    X_encoded, _ = _encode_categoricals(X_raw)
+
     # Fill missing numeric values
-    X = X.ffill().bfill()
+    X = X_encoded.ffill().bfill()
 
     return X, y, encoders
 
 def train_model(df):
     y = df["cycle_phase"]
     X = df.drop(columns=["cycle_phase"])
+
+    X, _ = _encode_categoricals(X)
 
     X = X.fillna(method="ffill").fillna(method="bfill")
 
@@ -85,15 +110,19 @@ def train_model(df):
     )
 
     if _XGBOOST_AVAILABLE:
+        class_counts = np.bincount(y_encoded)
+        imbalance_ratio = float(class_counts.max() / class_counts.min()) if class_counts.min() > 0 else 1.0
+
         model = XGBClassifier(
-            n_estimators=800,
-            max_depth=6,
+            n_estimators=300,
+            max_depth=3,
             learning_rate=0.05,
             subsample=0.8,
             colsample_bytree=0.8,
+            eval_metric="mlogloss",
             objective="multi:softprob",
             random_state=42,
-            eval_metric="mlogloss",
+            scale_pos_weight=imbalance_ratio,
             tree_method="hist",
         )
         model.fit(
@@ -144,15 +173,19 @@ def train_multi_horizon(df):
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
         if _XGBOOST_AVAILABLE:
+            class_counts = y_train.value_counts()
+            imbalance_ratio = float(class_counts.max() / class_counts.min()) if len(class_counts) > 1 else 1.0
+
             model = XGBClassifier(
-                n_estimators=800,
-                max_depth=6,
+                n_estimators=300,
+                max_depth=3,
                 learning_rate=0.05,
                 subsample=0.8,
                 colsample_bytree=0.8,
+                eval_metric="mlogloss",
                 objective="multi:softprob",
                 random_state=42,
-                eval_metric="mlogloss",
+                scale_pos_weight=imbalance_ratio,
                 tree_method="hist",
             )
             model.fit(
