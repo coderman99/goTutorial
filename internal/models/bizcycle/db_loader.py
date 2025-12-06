@@ -87,7 +87,7 @@ def load_indicator_data():
 
     engine = _get_engine()
     if engine:
-        df = pd.read_sql("SELECT * FROM indicator_models", engine)
+        df = pd.read_sql("SELECT * FROM econ_models", engine)
 
         # Remove SP500 because we will load it separately
         df = df[df["series_id"] != "SP500"]
@@ -116,7 +116,7 @@ def load_sp500_from_db():
         spx_db = pd.read_sql(
             """
             SELECT *
-            FROM indicator_models
+            FROM econ_models
             WHERE series_id = 'SP500'
             ORDER BY timestamp ASC
         """,

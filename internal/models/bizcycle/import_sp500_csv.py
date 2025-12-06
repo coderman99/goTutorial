@@ -20,9 +20,9 @@ def load_sp500_csv_to_db():
     df = df[["name", "series_id", "value", "timestamp", "indicator_cat"]]
 
     engine = create_engine(get_database_url())
-    df.to_sql("indicator_models", engine, if_exists="append", index=False)
+    df.to_sql("econ_models", engine, if_exists="append", index=False)
 
-    print("Inserted", len(df), "SP500 monthly rows into indicator_models")
+    print("Inserted", len(df), "SP500 monthly rows into econ_models")
 
 if __name__ == "__main__":
     load_sp500_csv_to_db()
