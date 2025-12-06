@@ -155,6 +155,7 @@ def train_multi_horizon(df):
                 eval_metric="multi_logloss",
                 verbose=False,
             )
+            model.fit(X_train, y_train, verbose=False)
         else:
             model = GradientBoostingClassifier(random_state=42)
 
