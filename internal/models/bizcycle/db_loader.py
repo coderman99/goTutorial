@@ -89,8 +89,9 @@ def load_indicator_data():
     if engine:
         df = pd.read_sql("SELECT * FROM econ_models", engine)
 
-        # Remove SP500 because we will load it separately
-        df = df[df["series_id"] != "SP500"]
+        # Remove SP500/StockMarketIndex rows; S&P 500 is sourced only from sp500_models
+        mask_spx = df["series_id"].str.upper().isin({"SP500", "STOCKMARKETINDEX"})
+        df = df[~mask_spx]
 
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.sort_values("timestamp")
