@@ -140,10 +140,15 @@ def train_model(df):
     print(classification_report(y_test_labels, preds))
     return model, X_test, y_test_labels
 
-def create_future_targets(df):
-    df["cycle_1m"] = df["cycle_phase"].shift(-1)
-    df["cycle_3m"] = df["cycle_phase"].shift(-3)
-    df["cycle_6m"] = df["cycle_phase"].shift(-6)
+def create_future_targets(df, freq="M"):
+    if str(freq).startswith("W"):
+        offsets = {"cycle_1m": 4, "cycle_3m": 12, "cycle_6m": 24}
+    else:
+        offsets = {"cycle_1m": 1, "cycle_3m": 3, "cycle_6m": 6}
+
+    df = df.copy()
+    for col, step in offsets.items():
+        df[col] = df["cycle_phase"].shift(-step)
     return df
 
 def train_multi_horizon(df):
