@@ -1,11 +1,11 @@
 try:
-    from lightgbm import LGBMClassifier
+    from xgboost import XGBClassifier
 
-    _LIGHTGBM_AVAILABLE = True
-except ImportError:  # pragma: no cover - fallback when lightgbm is unavailable
+    _XGBOOST_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when xgboost is unavailable
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LIGHTGBM_AVAILABLE = False
+    _XGBOOST_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -127,7 +127,6 @@ def train_model(df):
             X_train,
             y_train,
             eval_set=[(X_test, y_test)],
-            eval_metric="multi_logloss",
             verbose=False,
         )
     else:

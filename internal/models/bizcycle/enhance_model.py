@@ -15,11 +15,14 @@ except Exception:  # pragma: no cover - optional dependency
 try:
     from lightgbm import LGBMClassifier
 
-    _LIGHTGBM_AVAILABLE = True
+try:
+    from xgboost import XGBClassifier
+
+    _XGBOOST_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LIGHTGBM_AVAILABLE = False
+    _XGBOOST_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -180,8 +183,11 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_lightgbm(X, y):
-    """Fit a LightGBM classifier with time-aware validation for early stopping."""
+def _fit_xgboost(X, y):
+    """Fit an XGBoost classifier with time-aware validation for early stopping."""
+
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
 
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
@@ -213,7 +219,7 @@ def _fit_lightgbm(X, y):
         X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
-    if _LIGHTGBM_AVAILABLE:
+    if _XGBOOST_AVAILABLE:
         # Class balancing for imbalanced macro cycles
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
@@ -233,16 +239,18 @@ def _fit_lightgbm(X, y):
         )
 
         if X_val is not None and y_val is not None:
+            eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
             model.fit(
                 X_train,
                 y_train,
+                sample_weight=sample_weight,
                 eval_set=[(X_val, y_val)],
                 eval_metric="multi_logloss",
                 verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded)
-    else:  # pragma: no cover - fallback for environments without lightgbm
+            model.fit(X_selected, y_encoded, sample_weight=pd.Series(y_encoded).map(class_weight))
+    else:  # pragma: no cover - fallback for environments without xgboost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -284,9 +292,9 @@ def train_lightgbm_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_lightgbm(X, y)
+        pipeline = _fit_xgboost(X, y)
 
-        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
@@ -467,5 +475,5 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_catboost_multi_horizon = train_lightgbm_multi_horizon
-train_xgboost_multi_horizon = train_lightgbm_multi_horizon
+train_catboost_multi_horizon = train_xgboost_multi_horizon
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon

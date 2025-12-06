@@ -2,7 +2,6 @@ package indicatorsStruct
 
 type LeadingIndicators struct {
 	ConsumerConfidenceIndex float64 // Index value representing consumer confidence
-	StockMarketIndex        float64 // Value of a major stock market index (e.g., S&P 500)
 	ManufacturingPMI        float64 // Purchasing Managers' Index for manufacturing sector
 	M2MoneySupply           float64 // Total money supply (M2) in the economy
 	FedFundsRate            float64 // Current federal funds interest rate
@@ -147,7 +146,6 @@ type GlobalIndicatorsID struct {
 var Indicators = IndicatorSeriesID{
 	Leading: LeadingIndicatorsSeriesID{
 		ConsumerConfidenceIndex: "UMCSENT",
-		StockMarketIndex:        "SP500",
 		ManufacturingPMI:        "NAPM",
 		M2MoneySupply:           "M2SL",
 		FedFundsRate:            "FEDFUNDS",
