@@ -24,6 +24,9 @@ except Exception:  # pragma: no cover - optional dependency
 try:
     from lightgbm import LGBMClassifier
 
+except ImportError:  # pragma: no cover - lightweight fallback
+    LGBMClassifier = None
+
 try:
     from xgboost import XGBClassifier
 
@@ -487,5 +490,4 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_catboost_multi_horizon = train_xgboost_multi_horizon
-train_lightgbm_multi_horizon = train_xgboost_multi_horizon
+train_lightgbm_multi_horizon = train_lightgbm_multi_horizon

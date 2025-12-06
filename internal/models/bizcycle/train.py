@@ -21,7 +21,7 @@ from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
-    train_xgboost_multi_horizon,
+    train_lightgbm_multi_horizon,
     predict_and_explain,
 )
 from internal.models.bizcycle.config import get_database_url
@@ -160,8 +160,8 @@ print(
     f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
 )
 
-# 11. Train multi-horizon models with XGBoost classifiers
-pipelines, accuracies = train_xgboost_multi_horizon(X, df_targets)
+# 11. Train multi-horizon models with LightGBM classifiers
+pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():

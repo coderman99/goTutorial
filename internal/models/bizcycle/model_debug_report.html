@@ -1,254 +1,106 @@
 <h1>Model Debug Report</h1><h2>Prediction Output</h2><pre>{
-    "as_of": "2025-11-30T00:00:00",
+    "as_of": "2015-12-31T00:00:00",
     "cycle_1m": {
-        "predicted_phase": "Expansion",
+        "predicted_phase": "Contraction",
         "probabilities": {
-            "Expansion": 0.8526413593609633,
-            "Contraction": 0.1435886605996345,
-            "Peak": 0.003769980039402233
+            "Contraction": 0.8036775588989258,
+            "Expansion": 0.18623730540275574,
+            "Peak": 0.0100851533934474
         },
         "top_features": [
             {
-                "feature": "returns_pct_lag1",
-                "impact": 0.07719865708262434
+                "feature": "returns",
+                "impact": 0.5026772022247314
             },
             {
-                "feature": "returns_lag3_lag6",
-                "impact": 0.06380542419671317
+                "feature": "AvgHoursWorked_lag3",
+                "impact": 0.27516359090805054
             },
             {
-                "feature": "returns_roll6_lag1_lag6",
-                "impact": 0.046976493502097635
-            },
-            {
-                "feature": "returns_lag1",
-                "impact": 0.04596333300744665
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag1_lag6",
-                "impact": 0.041428630275376216
-            },
-            {
-                "feature": "returns_roll6_lag6",
-                "impact": 0.04123824243372191
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag6",
-                "impact": 0.03769293462745277
-            },
-            {
-                "feature": "returns_roll6",
-                "impact": 0.03372775912283448
-            },
-            {
-                "feature": "returns_pct",
-                "impact": 0.0335559306976233
-            },
-            {
-                "feature": "AvgHoursWorked_roll6_lag3_lag6",
-                "impact": 0.03122513726205251
-            },
-            {
-                "feature": "AvgHoursWorked_roll6",
-                "impact": 0.029875985187486027
-            },
-            {
-                "feature": "returns_roll6_lag3_lag6",
-                "impact": 0.029256196381877264
+                "feature": "returns_lag6",
+                "impact": 0.15585455298423767
             }
         ],
         "most_impactful_indicators": [
             {
                 "indicator": "returns",
-                "aggregate_impact": 0.2915578714339361
-            },
-            {
-                "indicator": "returns_roll6",
-                "aggregate_impact": 0.2262365527855972
+                "aggregate_impact": 0.6585317552089691
             },
             {
                 "indicator": "AvgHoursWorked",
-                "aggregate_impact": 0.22298987413831062
-            },
-            {
-                "indicator": "AvgHoursWorked_roll6",
-                "aggregate_impact": 0.11642284059383814
-            },
-            {
-                "indicator": "returns_roll3",
-                "aggregate_impact": 0.08634237917229556
-            },
-            {
-                "indicator": "AvgHoursWorked_roll3",
-                "aggregate_impact": 0.05645048187602234
+                "aggregate_impact": 0.27516359090805054
             }
         ]
     },
     "cycle_3m": {
         "predicted_phase": "Expansion",
         "probabilities": {
-            "Expansion": 0.8635860189190577,
-            "Contraction": 0.12771721250246287,
-            "Peak": 0.008696768578479359
+            "Expansion": 0.43408942222595215,
+            "Contraction": 0.4214363694190979,
+            "Peak": 0.14447423815727234
         },
         "top_features": [
             {
-                "feature": "returns_pct_lag3_lag6",
-                "impact": 0.08185512460326053
-            },
-            {
-                "feature": "returns_lag1_lag6",
-                "impact": 0.07237898225464919
-            },
-            {
-                "feature": "returns_roll6_lag1_lag3_lag6",
-                "impact": 0.054729920515137795
-            },
-            {
-                "feature": "returns_roll3_lag6",
-                "impact": 0.04697940658999598
-            },
-            {
-                "feature": "returns_roll3_lag1_lag3",
-                "impact": 0.04258258153862793
-            },
-            {
-                "feature": "AvgHoursWorked_pct",
-                "impact": 0.041388175571587395
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag1_lag3",
-                "impact": 0.03997149239007894
-            },
-            {
-                "feature": "AvgHoursWorked_roll3",
-                "impact": 0.03713622897430856
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag6",
-                "impact": 0.03711800439467705
-            },
-            {
-                "feature": "AvgHoursWorked_roll3_lag1",
-                "impact": 0.034631725847714366
-            },
-            {
-                "feature": "returns_roll6",
-                "impact": 0.034365530912907755
-            },
-            {
                 "feature": "returns_lag6",
-                "impact": 0.032874378372137816
+                "impact": 1.0106488466262817
+            },
+            {
+                "feature": "AvgHoursWorked_lag1",
+                "impact": 0.4925290644168854
+            },
+            {
+                "feature": "returns_lag3",
+                "impact": 0.4925290644168854
+            },
+            {
+                "feature": "AvgHoursWorked",
+                "impact": 0.24760033190250397
+            },
+            {
+                "feature": "returns",
+                "impact": 0.24760033190250397
             }
         ],
         "most_impactful_indicators": [
             {
                 "indicator": "returns",
-                "aggregate_impact": 0.3370584416462734
+                "aggregate_impact": 1.0106488466262817
             },
             {
                 "indicator": "AvgHoursWorked",
-                "aggregate_impact": 0.229161967876723
-            },
-            {
-                "indicator": "returns_roll3",
-                "aggregate_impact": 0.1473620193662783
-            },
-            {
-                "indicator": "returns_roll6",
-                "aggregate_impact": 0.13561488893459395
-            },
-            {
-                "indicator": "AvgHoursWorked_roll3",
-                "aggregate_impact": 0.11540987836377332
-            },
-            {
-                "indicator": "AvgHoursWorked_roll6",
-                "aggregate_impact": 0.03539280381235804
+                "aggregate_impact": 0.7401293963193893
             }
         ]
     },
     "cycle_6m": {
         "predicted_phase": "Contraction",
         "probabilities": {
-            "Contraction": 0.8904096095583163,
-            "Expansion": 0.10716919674455219,
-            "Peak": 0.0024211936971315685
+            "Contraction": 0.5743998885154724,
+            "Expansion": 0.4132019579410553,
+            "Peak": 0.012398174032568932
         },
         "top_features": [
             {
-                "feature": "returns_pct_lag6",
-                "impact": 0.09627871496203862
+                "feature": "returns_lag3",
+                "impact": 1.395415186882019
             },
             {
-                "feature": "returns_roll6_lag1_lag3_lag6",
-                "impact": 0.08669008928618868
-            },
-            {
-                "feature": "returns_lag1_lag3",
-                "impact": 0.06588655485359758
-            },
-            {
-                "feature": "returns_roll3_lag3",
-                "impact": 0.05991698945402636
-            },
-            {
-                "feature": "returns_roll3_lag3_lag6",
-                "impact": 0.057515183003216334
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag3",
-                "impact": 0.05215873853575334
-            },
-            {
-                "feature": "AvgHoursWorked_pct_lag3_lag6",
-                "impact": 0.04452493220839127
-            },
-            {
-                "feature": "returns_roll3_lag1",
-                "impact": 0.037664343463186624
+                "feature": "returns_lag1",
+                "impact": 0.5726938843727112
             },
             {
                 "feature": "returns_lag6",
-                "impact": 0.03572675040062989
+                "impact": 0.03161308914422989
             },
             {
-                "feature": "returns_pct_lag1",
-                "impact": 0.031067314557892505
-            },
-            {
-                "feature": "returns_roll3_lag1_lag3_lag6",
-                "impact": 0.03021652640783941
-            },
-            {
-                "feature": "returns_roll6",
-                "impact": 0.02939457635709008
+                "feature": "returns",
+                "impact": 0.03161308914422989
             }
         ],
         "most_impactful_indicators": [
             {
                 "indicator": "returns",
-                "aggregate_impact": 0.3384336327309285
-            },
-            {
-                "indicator": "AvgHoursWorked",
-                "aggregate_impact": 0.25407000351258596
-            },
-            {
-                "indicator": "returns_roll3",
-                "aggregate_impact": 0.2374414243490734
-            },
-            {
-                "indicator": "returns_roll6",
-                "aggregate_impact": 0.11608466564327877
-            },
-            {
-                "indicator": "AvgHoursWorked_roll3",
-                "aggregate_impact": 0.028361728733358956
-            },
-            {
-                "indicator": "AvgHoursWorked_roll6",
-                "aggregate_impact": 0.02560854503077442
+                "aggregate_impact": 1.9997221603989601
             }
         ]
     }
