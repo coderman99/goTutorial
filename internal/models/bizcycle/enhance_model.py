@@ -25,57 +25,7 @@ except ImportError:  # pragma: no cover - fallback
 
     XGBClassifier = None
 
-# Explicitly list public helpers for callers that rely on star-imports.
-__all__ = [
-    "to_wide_monthly",
-    "KEY_INDICATORS",
-    "make_features",
-    "train_xgboost_multi_horizon",
-    "predict_and_explain",
-    "backfill_missing_key_indicators",
-]
-
-# Helper to ensure key indicators exist even when upstream sources omit them.
-def backfill_missing_key_indicators(wide_df, freq="W-FRI"):
-    """Add synthetic macro columns for any missing ``KEY_INDICATORS``.
-
-    Callers often import this helper directly from ``enhance_model``; keeping
-    the implementation here avoids surprises when older codepaths bypass
-    ``preprocess``. When the upstream database lacks a required indicator, we
-    synthesize a proxy series from the packaged S&P 500 history and join both
-    value and category-code columns back into the wide frame.
-    """
-
-    from .db_loader import synthesize_key_indicators
-
-    present = {
-        key
-        for col in wide_df.columns
-        for key in KEY_INDICATORS
-        if col.startswith(key)
-    }
-    missing = KEY_INDICATORS - present
-    if not missing:
-        return wide_df
-
-    synthetic_long = synthesize_key_indicators(freq=freq)
-    synthetic_long = synthetic_long[synthetic_long["name"].isin(missing)]
-
-    value_wide = to_wide_monthly(synthetic_long[["name", "value"]], freq=freq)
-    cat_wide = (
-        synthetic_long.pivot_table(
-            index=synthetic_long.index,
-            columns="name",
-            values="indicator_cat_code",
-            aggfunc="first",
-        ).add_suffix("_catcode")
-    )
-
-    wide_df = wide_df.join(value_wide, how="left")
-    wide_df = wide_df.join(cat_wide, how="left")
-
     return wide_df
-
 
 # ---- Helper: wide conversion for long-format indicator data ----
 def to_wide_monthly(df_long, freq="M"):
@@ -377,9 +327,9 @@ def train_xgboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_xgboost(X, y)
+        pipeline = _fit_lightgbm(X, y)
 
-        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]

@@ -129,32 +129,6 @@ def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
     return long_df.dropna(subset=["value"])
 
 
-def synthesize_key_indicators(freq: str = "W-FRI") -> pd.DataFrame:
-    """Create synthetic key macro indicators aligned to the requested frequency.
-
-    This is useful when the upstream database does not contain all required macro
-    series. The synthesized data is intentionally lightweight and derived from
-    the packaged S&P 500 history so training can still proceed with full macro
-    coverage.
-    """
-
-    spx_df = _load_local_sp500()
-    synthetic_long = _build_sample_indicators(spx_df)
-
-    # Resample to the requested frequency using the shared preprocessing helpers
-    # without introducing a hard dependency at module import time.
-    if freq:
-        from .preprocess import preprocess_weekly, preprocess_monthly
-
-        synthetic_long = synthetic_long.set_index("timestamp")
-        if freq.startswith("W"):
-            synthetic_long = preprocess_weekly(synthetic_long)
-        else:
-            synthetic_long = preprocess_monthly(synthetic_long)
-
-    return synthetic_long
-
-
 def _append_missing_macro_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure the returned indicator frame always includes the key macro set."""
 
