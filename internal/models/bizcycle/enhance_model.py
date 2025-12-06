@@ -142,7 +142,7 @@ def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
 
     return X[selected], score_series
 
-# ---- LightGBM helpers ----
+# ---- CatBoost helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     """Return train/validation splits preserving time order for early stopping."""
 
