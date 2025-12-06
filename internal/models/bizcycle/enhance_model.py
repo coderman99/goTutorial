@@ -161,10 +161,23 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 def _fit_lightgbm(X, y):
     """Fit a LightGBM classifier with time-aware validation for early stopping."""
 
+    # Forward-fill to avoid peeking into the future, then drop any rows that
+    # still contain gaps so mutual_info and training do not receive NaNs.
     X_filled = X.ffill()
+    if isinstance(y, pd.Series):
+        y_aligned = y.copy()
+    else:
+        y_aligned = pd.Series(y, index=X_filled.index)
 
-    label_encoder = LabelEncoder().fit(y)
-    y_encoded = label_encoder.transform(y)
+    valid_mask = X_filled.notna().all(axis=1)
+    X_filled = X_filled.loc[valid_mask]
+    y_aligned = y_aligned.loc[valid_mask]
+
+    if X_filled.empty or y_aligned.empty:
+        raise ValueError("No valid samples after dropping rows with missing features")
+
+    label_encoder = LabelEncoder().fit(y_aligned)
+    y_encoded = label_encoder.transform(y_aligned)
 
     max_feats = max(20, min(60, X_filled.shape[1]))
     X_selected, feature_scores = _screen_features_by_importance(
@@ -172,7 +185,7 @@ def _fit_lightgbm(X, y):
     )
 
     X_train, y_train, X_val, y_val = _split_for_early_stopping(
-        X_selected, pd.Series(y_encoded), val_fraction=0.2
+        X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
     if _LIGHTGBM_AVAILABLE:
