@@ -17,11 +17,6 @@ except Exception:  # pragma: no cover - optional dependency
 # Prefer LightGBM when available, otherwise fall back gracefully
 _LIGHTGBM_AVAILABLE = False
 try:
-    import shap
-except Exception:  # pragma: no cover - optional dependency
-    shap = None
-
-try:
     from lightgbm import LGBMClassifier
 
 except ImportError:  # pragma: no cover - lightweight fallback
@@ -197,6 +192,9 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 
 def _fit_xgboost(X, y):
     """Fit an XGBoost classifier with time-aware validation for early stopping."""
+
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
 
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)

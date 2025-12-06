@@ -34,9 +34,22 @@ def compute_composite_score(df, horizon):
     # 1. Target series
     y = df[horizon]
 
-    # 2. Keep ONLY numeric columns for scoring
+    # 2. Keep ONLY numeric columns for scoring, explicitly dropping any
+    #    stock/return-derived fields or previously-computed composite scores so
+    #    the macro indicator signal is not polluted by market returns.
     X = df.drop(columns=[horizon])
-    X = X.select_dtypes(include=["number"])     # <— FIX
+    numeric_cols = X.select_dtypes(include=["number"]).columns
+    filtered_cols = [
+        c
+        for c in numeric_cols
+        if "return" not in c.lower() and not c.startswith("composite_")
+    ]
+
+    if not filtered_cols:
+        df[f"composite_{horizon}"] = np.nan
+        return df, pd.Series(dtype=float)
+
+    X = X[filtered_cols]
 
     # --------------------------------------------
     # Remove rows where target is NA
@@ -66,7 +79,11 @@ def compute_composite_score(df, horizon):
     f_scores, _ = f_classif(X_scaled, y)
 
     weights = pd.Series(f_scores, index=X.columns)
-    weights = weights / weights.sum()
+    denom = weights.sum()
+    if denom == 0:
+        weights = pd.Series(1 / len(weights), index=X.columns)
+    else:
+        weights = weights / denom
 
     # --------------------------------------------
     # Add composite score to main dataframe
