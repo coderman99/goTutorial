@@ -85,6 +85,20 @@ def to_wide_monthly(df_long):
 
 
 # ---- Feature engineering ----
+KEY_INDICATORS = {
+    "Unemployment",
+    "PMI",
+    "IP",
+    "CPI",
+    "Housing starts",
+    "Yield curve",
+    "Leading indicators index",
+    "Credit spreads",
+    "NFIB sentiment",
+    "M2 YoY",
+}
+
+
 def make_features(wide, base_lags=(1, 3)):
     """
     Build a compact, leakage-safe feature set.
@@ -97,9 +111,12 @@ def make_features(wide, base_lags=(1, 3)):
     wide = wide.copy()
     wide = wide.loc[~wide.index.duplicated()].sort_index()
 
-    # Keep only numeric columns
+    # Keep only numeric columns that are not targets/composite scores to avoid
+    # accidentally shifting labels instead of features.
     numeric_cols = [c for c in wide.columns if pd.api.types.is_numeric_dtype(wide[c])]
-    X = wide[numeric_cols].copy()
+    target_like_cols = [c for c in numeric_cols if c.startswith("cycle_") or c.startswith("composite_cycle_")]
+    feature_columns = [c for c in numeric_cols if c not in target_like_cols]
+    X = wide[feature_columns].copy()
 
     # Standardize each indicator so scales are comparable
     for col in list(X.columns):
@@ -121,6 +138,11 @@ def make_features(wide, base_lags=(1, 3)):
         lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
         features = pd.concat([features, lagged], axis=1)
 
+    # Ensure key macro indicators remain available even if selection trims others.
+    missing_key_indicators = [k for k in KEY_INDICATORS if k not in X.columns]
+    if missing_key_indicators:
+        print("Warning: missing key indicators in features:", missing_key_indicators)
+
     features = features.dropna(how="all")
     return features
 
@@ -141,6 +163,10 @@ def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
     selected = score_series[score_series > min_score].head(max_features).index
     if selected.empty:
         selected = score_series.head(max_features).index
+
+    # Preserve diversity by forcing inclusion of key macro indicators when present
+    key_features_in_X = [col for col in X.columns if any(col.startswith(k) for k in KEY_INDICATORS)]
+    selected = pd.Index(selected).union(key_features_in_X)
 
     return X[selected], score_series
 
@@ -224,18 +250,27 @@ def _fit_lightgbm(X, y):
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
         train_sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
 
-        model = LGBMClassifier(
-            n_estimators=400,
-            num_leaves=31,
-            max_depth=-1,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="multiclass",
-            class_weight=class_weight,
-            random_state=42,
-            importance_type="gain",
-        )
+        lgbm_params = {
+            "n_estimators": 400,
+            "num_leaves": 31,
+            "max_depth": -1,
+            "learning_rate": 0.05,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "objective": "multiclass",
+            "class_weight": class_weight,
+            "random_state": 42,
+            "importance_type": "gain",
+        }
+
+        if len(class_counts) == 2:
+            # Help LightGBM balance binary classes automatically
+            lgbm_params.update({
+                "is_unbalance": True,
+                "scale_pos_weight": float(class_counts.max() / class_counts.min()),
+            })
+
+        model = LGBMClassifier(**lgbm_params)
 
         if X_val is not None and y_val is not None:
             eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
