@@ -8,13 +8,18 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
 try:
-    from lightgbm import LGBMClassifier
+    import shap
+except Exception:  # pragma: no cover - optional dependency
+    shap = None
 
-    _LIGHTGBM_AVAILABLE = True
+try:
+    from xgboost import XGBClassifier
+
+    _XGBOOST_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LIGHTGBM_AVAILABLE = False
+    _XGBOOST_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -142,6 +147,30 @@ def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
 
     return X[selected], score_series
 
+
+def _encode_categoricals(X_df, fitted_encoders=None):
+    """Encode categorical columns with LabelEncoder, returning encoded frame + encoders."""
+
+    encoders = fitted_encoders or {}
+    X_encoded = X_df.copy()
+
+    cat_cols = [
+        c
+        for c in X_encoded.columns
+        if X_encoded[c].dtype == "object" or pd.api.types.is_categorical_dtype(X_encoded[c])
+    ]
+
+    for col in cat_cols:
+        enc = encoders.get(col)
+        if enc is None:
+            enc = LabelEncoder()
+            enc.fit(X_encoded[col].astype(str).fillna("<NA>"))
+            encoders[col] = enc
+
+        X_encoded[col] = enc.transform(X_encoded[col].astype(str).fillna("<NA>"))
+
+    return X_encoded, encoders
+
 # ---- CatBoost helpers ----
 def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     """Return train/validation splits preserving time order for early stopping."""
@@ -158,12 +187,15 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_lightgbm(X, y):
-    """Fit a LightGBM classifier with time-aware validation for early stopping."""
+def _fit_xgboost(X, y):
+    """Fit an XGBoost classifier with time-aware validation for early stopping."""
+
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
 
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
-    X_filled = X.ffill()
+    X_filled = X_encoded.ffill()
     if isinstance(y, pd.Series):
         y_aligned = y.copy()
     else:
@@ -188,31 +220,44 @@ def _fit_lightgbm(X, y):
         X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
-    if _LIGHTGBM_AVAILABLE:
+    if _XGBOOST_AVAILABLE:
         # Class balancing for imbalanced macro cycles
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
-        model = LGBMClassifier(
-            n_estimators=800,
-            num_leaves=63,
+        sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
+
+        # scale_pos_weight is primarily for binary tasks; we provide a balanced
+        # ratio here to honor class imbalance without changing the multi-class objective.
+        imbalance_ratio = float(class_counts.max() / class_counts.min()) if len(class_counts) > 1 else 1.0
+
+        model = XGBClassifier(
+            n_estimators=300,
+            max_depth=3,
             learning_rate=0.05,
-            objective="multiclass",
+            subsample=0.8,
+            colsample_bytree=0.8,
+            eval_metric="mlogloss",
+            objective="multi:softprob",
             random_state=42,
-            verbosity=-1,
-            class_weight=class_weight,
+            scale_pos_weight=imbalance_ratio,
+            tree_method="hist",
+            verbosity=0,
         )
 
         if X_val is not None and y_val is not None:
+            eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
             model.fit(
                 X_train,
                 y_train,
+                sample_weight=sample_weight,
                 eval_set=[(X_val, y_val)],
-                eval_metric="multi_logloss",
+                sample_weight_eval_set=[eval_sample_weight],
+                verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded)
-    else:  # pragma: no cover - fallback for environments without lightgbm
+            model.fit(X_selected, y_encoded, sample_weight=pd.Series(y_encoded).map(class_weight))
+    else:  # pragma: no cover - fallback for environments without xgboost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -224,9 +269,12 @@ def _fit_lightgbm(X, y):
         "label_encoder": label_encoder,
         "feature_order": list(X_selected.columns),
         "feature_scores": feature_scores.to_dict(),
+        "feature_encoders": {k: v.classes_.tolist() for k, v in feature_encoders.items()},
         "train_accuracy": float(train_accuracy),
     }
-def train_lightgbm_multi_horizon(
+
+
+def train_xgboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -251,9 +299,9 @@ def train_lightgbm_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_lightgbm(X, y)
+        pipeline = _fit_xgboost(X, y)
 
-        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
@@ -263,9 +311,17 @@ def train_lightgbm_multi_horizon(
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
+    # Ensure importances are 1-D and aligned with features
+    impacts_array = np.asarray(importances)
+    if impacts_array.ndim > 1:
+        impacts_array = impacts_array.reshape(-1, impacts_array.shape[-1]).mean(axis=0)
+
+    if impacts_array.size != len(feature_list):
+        impacts_array = np.resize(impacts_array, len(feature_list))
+
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(importances, index=feature_list)
+        pd.Series(impacts_array, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
@@ -352,25 +408,70 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
         label_encoder = pipeline["label_encoder"]
         expected_cols = pipeline["feature_order"]
+        fitted_feature_encs = pipeline.get("feature_encoders", {})
 
-        # Reindex latest_row to match training order
+        # Reindex latest_row to match training order and encode categoricals consistently
         X = latest_row.reindex(columns=expected_cols)
         X = X.ffill(axis=1).bfill(axis=1).fillna(0)
 
-        proba = model.predict_proba(X)[0]
+        # Rehydrate encoders
+        encoders = {}
+        for col, classes in fitted_feature_encs.items():
+            enc = LabelEncoder()
+            enc.classes_ = np.array(classes)
+            encoders[col] = enc
+
+        X_encoded, _ = _encode_categoricals(X, encoders)
+
+        raw_pred = estimator.predict(X_encoded)
+        if raw_pred.ndim == 2:  # XGBoost with multi:softprob returns probability matrix
+            proba = raw_pred[0]
+        elif hasattr(estimator, "predict_proba"):
+            proba = estimator.predict_proba(X_encoded)[0]
+        else:
+            proba = np.zeros(len(label_encoder.classes_))
+            proba[int(raw_pred[0])] = 1.0
+
         pred_idx = int(np.argmax(proba))
         pred_label = label_encoder.inverse_transform([pred_idx])[0]
 
         prob_dict = {label: float(prob) for label, prob in zip(label_encoder.classes_, proba)}
 
-        if hasattr(estimator, "get_feature_importance"):
-            feature_importances = estimator.get_feature_importance()
+        booster = getattr(estimator, "get_booster", lambda: None)()
+        if booster is not None:
+            raw_importance = booster.get_score(importance_type="gain")
+            if raw_importance and all(k.startswith("f") for k in raw_importance):
+                feature_importances = [raw_importance.get(f"f{i}", 0.0) for i in range(len(expected_cols))]
+            else:
+                feature_importances = [raw_importance.get(col, 0.0) for col in expected_cols]
         else:
             feature_importances = getattr(estimator, "feature_importances_", np.zeros(len(expected_cols)))
 
-        
+        # Prefer SHAP explanations when available
+        shap_impacts = None
+        if shap is not None and hasattr(estimator, "predict"):
+            try:
+                explainer = shap.TreeExplainer(estimator)
+                shap_values = explainer.shap_values(X_encoded)
+                if isinstance(shap_values, list):
+                    shap_array = np.asarray(shap_values[pred_idx][0])
+                elif isinstance(shap_values, np.ndarray):
+                    if shap_values.ndim == 3:  # (rows, classes, features)
+                        shap_array = shap_values[0, pred_idx, :]
+                    elif shap_values.ndim == 2:  # (rows, features)
+                        shap_array = shap_values[0]
+                    else:
+                        shap_array = shap_values.squeeze()
+                else:
+                    shap_array = None
+                shap_impacts = shap_array
+            except Exception:
+                shap_impacts = None
+
+        impacts_for_ranking = shap_impacts if shap_impacts is not None else feature_importances
+
         top_features, top_indicators = _summarize_feature_impacts(
-            expected_cols, feature_importances, top_n
+            expected_cols, impacts_for_ranking, top_n
         )
 
         results[horizon] = {
@@ -384,5 +485,5 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_catboost_multi_horizon = train_lightgbm_multi_horizon
-train_xgboost_multi_horizon = train_lightgbm_multi_horizon
+train_catboost_multi_horizon = train_xgboost_multi_horizon
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon
