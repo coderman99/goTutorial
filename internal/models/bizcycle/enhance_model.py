@@ -7,6 +7,8 @@ from sklearn.feature_selection import mutual_info_classif
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
+from internal.models.bizcycle.indicator_definitions import KEY_INDICATORS
+
 # Optional SHAP import: keep this isolated so missing extras never break parsing
 shap = None
 try:
@@ -85,20 +87,6 @@ def to_wide_monthly(df_long, freq="M"):
 
 
 # ---- Feature engineering ----
-KEY_INDICATORS = {
-    "Unemployment",
-    "PMI",
-    "IP",
-    "CPI",
-    "Housing starts",
-    "Yield curve",
-    "Leading indicators index",
-    "Credit spreads",
-    "NFIB sentiment",
-    "M2 YoY",
-}
-
-
 def make_features(wide, base_lags=(1, 3)):
     """
     Build a compact, leakage-safe feature set.
