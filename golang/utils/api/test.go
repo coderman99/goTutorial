@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	indicators_model "goTutorial/internal/models/indicators"
 	indicatorsStruct "goTutorial/internal/structs/indicators"
 	"io"
 	"net/http"
@@ -51,7 +52,7 @@ func fetchSeriesFromFRED(seriesID string) ([]FredObservation, error) {
 		return nil, fmt.Errorf("missing FRED_API_KEY environment variable")
 	}
 
-	urlTemplate := `https://api.stlouisfed.org/fred/series/observations?series_id={{.SeriesID}}&observation_start=2000-01-01&observation_end=2009-12-31&api_key={{.ApiKey}}&file_type=json`
+	urlTemplate := `https://api.stlouisfed.org/fred/series/observations?series_id={{.SeriesID}}&observation_start=2000-01-01&observation_end=2025-11-30&api_key={{.ApiKey}}&file_type=json`
 
 	data := struct {
 		SeriesID string
@@ -117,7 +118,7 @@ func PopulateIndicators(db *gorm.DB) error {
 				fmt.Sscanf(obs.Value, "%f", &val)
 				dateParsed, _ := time.Parse("2006-01-02", obs.Date)
 
-				record := IndicatorModel{
+				record := indicators_model.EconModel{
 					Name:         indicatorName,
 					SeriesID:     seriesID,
 					Value:        val,
@@ -160,7 +161,7 @@ func main() {
 		panic("Failed to connect to DB: " + err.Error())
 	}
 
-	if err := db.AutoMigrate(&IndicatorModel{}); err != nil {
+	if err := db.AutoMigrate(&indicators_model.EconModel{}); err != nil {
 		panic("Migration failed: " + err.Error())
 	}
 

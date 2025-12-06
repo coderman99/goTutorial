@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// IndicatorModel maps to the indicator_models table.
 type IndicatorModel struct {
 	ID           uint      `gorm:"primaryKey"`
 	Name         string    `gorm:"column:name"`
@@ -26,12 +24,10 @@ type IndicatorModel struct {
 	IndicatorCat string    `gorm:"column:indicator_cat"`
 }
 
-// TableName explicitly sets the table name for IndicatorModel.
 func (IndicatorModel) TableName() string {
 	return "indicator_models"
 }
 
-// loadSP500Rows reads the local CSV and returns IndicatorModel rows ready for insertion.
 func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
 	file, err := os.Open(csvPath)
 	if err != nil {
@@ -57,13 +53,14 @@ func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
 	rows := make([]IndicatorModel, 0, len(records)-1)
 	for i, rec := range records {
 		if i == 0 {
-			continue // skip header
+			continue
 		}
+
 		if len(rec) < 2 {
 			return nil, fmt.Errorf("row %d malformed: %#v", i+1, rec)
 		}
 
-		ts, err := time.ParseInLocation("2006-01", rec[0], time.UTC)
+		ts, err := time.ParseInLocation("2006-01-02", rec[0], time.UTC)
 		if err != nil {
 			return nil, fmt.Errorf("row %d invalid date %q: %w", i+1, rec[0], err)
 		}
@@ -85,28 +82,18 @@ func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
 	return rows, nil
 }
 
-// resolveCSVPath finds the local CSV either in the current directory or adjacent utils/api path.
 func resolveCSVPath() (string, error) {
-	candidates := []string{
-		"sp500_monthly.csv",
-		filepath.Join("utils", "api", "sp500_monthly.csv"),
+	// CSV is next to this Go script
+	csvPath := "./sp500.csv"
+	if _, err := os.Stat(csvPath); err == nil {
+		return csvPath, nil
 	}
-
-	for _, cand := range candidates {
-		if _, err := os.Stat(cand); err == nil {
-			return cand, nil
-		}
-	}
-
-	return "", fmt.Errorf("sp500 csv not found in expected locations: %v", candidates)
+	return "", fmt.Errorf("sp500.csv not found next to script")
 }
 
-// openDB connects to Postgres using environment variables.
 func openDB() (*gorm.DB, error) {
-	if err := godotenv.Load(); err != nil {
-		// continue if .env is missing
-		_ = godotenv.Load("../.env")
-	}
+	_ = godotenv.Load()
+	_ = godotenv.Load("../.env")
 
 	dsn := fmt.Sprintf(
 		"host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
@@ -141,8 +128,13 @@ func main() {
 	}
 
 	if err := db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "series_id"}, {Name: "timestamp"}},
-		DoUpdates: clause.Assignments(map[string]interface{}{"value": gorm.Expr("excluded.value"), "indicator_cat": gorm.Expr("excluded.indicator_cat"), "name": gorm.Expr("excluded.name")}),
+		Columns: []clause.Column{{Name: "series_id"}, {Name: "timestamp"}},
+		DoUpdates: clause.Assignments(
+			map[string]interface{}{
+				"value":         gorm.Expr("excluded.value"),
+				"indicator_cat": gorm.Expr("excluded.indicator_cat"),
+				"name":          gorm.Expr("excluded.name"),
+			}),
 	}).CreateInBatches(rows, 200).Error; err != nil {
 		log.Fatalf("Insert rows: %v", err)
 	}
