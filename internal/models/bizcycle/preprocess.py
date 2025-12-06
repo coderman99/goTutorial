@@ -29,15 +29,19 @@ def preprocess_monthly(df):
 
     # Normalize to month-end using a per-indicator resample so we never
     # overwrite earlier history when new data ranges are appended.
-    df = df.set_index("timestamp")
-    monthly = df.groupby("name").resample("ME").last()
+    df = df.set_index(["name", "timestamp"])
+    monthly = (
+        df.sort_index(level="timestamp")
+        .groupby(level="name", group_keys=False)
+        .resample("ME", level="timestamp")
+        .last()
+    )
 
     # Force month-end timestamps after resampling for consistent merging
     monthly.index = monthly.index.set_levels(
         monthly.index.levels[1].to_period("M").to_timestamp("M"), level=1
     )
-    monthly.index = monthly.index.rename(["name", "timestamp"])
-    monthly = monthly.reset_index("name")
+    monthly = monthly.reset_index()
 
     category_map = {
         "Leading": 1,
@@ -54,6 +58,7 @@ def preprocess_monthly(df):
     )
 
     # Ensure strict month-end ordering without clobbering earlier history
+    monthly = monthly.set_index("timestamp")
     monthly = monthly[~monthly.index.duplicated(keep="last")]
     monthly = monthly.sort_index()
 
