@@ -45,7 +45,7 @@ def _normalize_sp500_monthly(df: pd.DataFrame, value_col: str = "sp500") -> pd.D
     aligned["timestamp"] = pd.to_datetime(aligned["timestamp"]).dt.tz_localize(None)
     aligned = aligned.rename(columns={value_col: "sp500"})
     aligned = aligned.set_index("timestamp").sort_index()
-    aligned = aligned.resample("M").last()
+    aligned = aligned.resample("ME").last()
     aligned.index = aligned.index.to_period("M").to_timestamp("M")
 
     # keep the first occurrence of a month so newly appended ranges never

@@ -48,7 +48,7 @@ def drop_constant_columns(df: pd.DataFrame):
 # ---------------------------------------------
 # 1. Load indicator data
 # ---------------------------------------------
-EARLIEST_DATE = pd.Timestamp("2000-01-01")
+EARLIEST_DATE = pd.Timestamp("1998-01-01")
 
 df = load_indicator_data()
 print(df.head())
