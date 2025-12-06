@@ -93,9 +93,11 @@ print(labeled_df.head())
 # 6. Compute Composite Scores for each horizon
 # ---------------------------------------------
 # Remove stock/return-derived columns before computing composite scores to ensure
-# the weights only reflect macro indicators.
-if "returns" in labeled_df.columns:
-    labeled_df = labeled_df.drop(columns=["returns"])
+# the weights only reflect macro indicators and to avoid leakage from S&P 500 returns.
+return_cols = [c for c in labeled_df.columns if "return" in c.lower()]
+if return_cols:
+    labeled_df = labeled_df.drop(columns=return_cols)
+    print("Dropped return-derived columns before composite scoring:", return_cols)
 
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
     labeled_df, weights = compute_composite_score(labeled_df, horizon)
@@ -144,14 +146,20 @@ print(wide_df.head())
 # 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
 composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
 feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
-# Strip any stock-market return-derived columns before feature engineering
+# Strip any stock-market return-derived columns before feature engineering and
+# double-check that no S&P 500 return features leak into the same row as the target.
 feature_df = feature_df[[c for c in feature_df.columns if "return" not in c.lower()]]
+
+print("\nBase feature columns prior to lagging (count={}):".format(len(feature_df.columns)))
+print(sorted(feature_df.columns))
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 print(
     f"\nFeature rows after engineering: {len(X):,} "
     f"(from labeled rows: {len(labeled_df):,})"
 )
+print("Engineered feature columns (count={}):".format(len(X.columns)))
+print(sorted(X.columns))
 
 # Remove constant columns that provide no predictive signal
 X, constant_cols = drop_constant_columns(X)
