@@ -35,6 +35,27 @@ def _load_local_sp500():
     return df[["timestamp", "sp500"]].sort_values("timestamp")
 
 
+def _normalize_sp500_monthly(df: pd.DataFrame, value_col: str = "sp500") -> pd.DataFrame:
+    """Align raw SP500 rows to month-end without overwriting earlier history."""
+
+    if df.empty:
+        return pd.DataFrame(columns=["sp500"])
+
+    aligned = df.copy()
+    # Normalize timestamps to UTC then drop timezone info to avoid tz-aware
+    # conversion errors when different sources (DB vs CSV) are combined.
+    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"], utc=True).dt.tz_convert(None)
+    aligned = aligned.rename(columns={value_col: "sp500"})
+    aligned = aligned.set_index("timestamp").sort_index()
+    aligned = aligned.resample("ME").last()
+    aligned.index = aligned.index.to_period("M").to_timestamp("M")
+
+    # keep the first occurrence of a month so newly appended ranges never
+    # clobber earlier history (e.g., 1995-2009 from CSV vs. 2010+ from DB)
+    aligned = aligned[~aligned.index.duplicated(keep="first")]
+    return aligned[["sp500"]]
+
+
 def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
     """Generate a small set of indicators derived from S&P 500 levels."""
 
@@ -66,17 +87,20 @@ def load_indicator_data():
 
     engine = _get_engine()
     if engine:
-        df = pd.read_sql("SELECT * FROM indicator_models", engine)
+        df = pd.read_sql("SELECT * FROM econ_models", engine)
 
         # Remove SP500 because we will load it separately
         df = df[df["series_id"] != "SP500"]
 
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
         df = df.sort_values("timestamp")
-        return df
+        # Keep timestamp as both column and index for consistent downstream
+        # merges (e.g., YieldCurve alignment) without truncating history.
+        return df.set_index("timestamp", drop=False)
 
     spx_df = _load_local_sp500()
-    return _build_sample_indicators(spx_df)
+    fallback = _build_sample_indicators(spx_df)
+    return fallback.set_index("timestamp", drop=False)
 
 
 def load_sp500_from_db():
@@ -86,24 +110,28 @@ def load_sp500_from_db():
     """
 
     engine = _get_engine()
+    sources = []
+
     if engine:
-        spx = pd.read_sql(
+        spx_db = pd.read_sql(
             """
             SELECT *
-            FROM indicator_models
+            FROM econ_models
             WHERE series_id = 'SP500'
+            ORDER BY timestamp ASC
         """,
             engine,
         )
 
-        if spx.empty:
+        if spx_db.empty:
             raise ValueError("ERROR: SP500 not found in DB. Check series_id or name.")
 
-        spx["timestamp"] = pd.to_datetime(spx["timestamp"], utc=True)
-        spx = spx.sort_values("timestamp")
-    else:
-        spx = _load_local_sp500()
+        sources.append(_normalize_sp500_monthly(spx_db.rename(columns={"value": "sp500"})))
 
-    spx = spx.set_index("timestamp").resample("ME").last()
-    spx = spx.rename(columns={"value": "sp500"})
+    # Always include the packaged CSV so early history (1995-2009) is available
+    # even when the database only contains recent daily observations.
+    sources.append(_normalize_sp500_monthly(_load_local_sp500()))
+
+    spx = pd.concat(sources).sort_index()
+    spx = spx[~spx.index.duplicated(keep="first")]
     return spx[["sp500"]]

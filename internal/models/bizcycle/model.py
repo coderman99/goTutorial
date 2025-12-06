@@ -1,10 +1,11 @@
 try:
-    from xgboost import XGBClassifier
-    _XGB_AVAILABLE = True
-except ImportError:  # pragma: no cover - fallback when xgboost is unavailable
+    from catboost import CatBoostClassifier
+
+    _CATBOOST_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when catboost is unavailable
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _XGB_AVAILABLE = False
+    _CATBOOST_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -83,29 +84,25 @@ def train_model(df):
         X, y_encoded, test_size=0.2, shuffle=False
     )
 
-    if _XGB_AVAILABLE:
-        model = XGBClassifier(
-            n_estimators=600,
-            max_depth=3,
+    if _CATBOOST_AVAILABLE:
+        model = CatBoostClassifier(
+            iterations=800,
+            depth=6,
             learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="multi:softprob",
-            eval_metric="mlogloss",
-            random_state=42,
-            n_jobs=-1,
+            loss_function="MultiClass",
+            eval_metric="TotalF1",
+            random_seed=42,
+            verbose=False,
         )
-    else:
-        model = GradientBoostingClassifier(random_state=42)
-
-    if _XGB_AVAILABLE:
         model.fit(
             X_train,
             y_train,
             eval_set=[(X_test, y_test)],
+            use_best_model=True,
             verbose=False,
         )
     else:
+        model = GradientBoostingClassifier(random_state=42)
         model.fit(X_train, y_train)
 
     preds_encoded = model.predict(X_test)
@@ -145,22 +142,21 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        if _XGB_AVAILABLE:
-            model = XGBClassifier(
-                n_estimators=600,
+        if _CATBOOST_AVAILABLE:
+            model = CatBoostClassifier(
+                iterations=800,
+                depth=6,
                 learning_rate=0.05,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                max_depth=3,
-                objective="multi:softprob",
-                eval_metric="mlogloss",
-                random_state=42,
-                n_jobs=-1,
+                loss_function="MultiClass",
+                eval_metric="TotalF1",
+                random_seed=42,
+                verbose=False,
             )
+            model.fit(X_train, y_train, verbose=False)
         else:
             model = GradientBoostingClassifier(random_state=42)
 
-        model.fit(X_train, y_train)
+            model.fit(X_train, y_train)
 
         acc = model.score(X_test, y_test)
         print(f"{target} accuracy: {acc:.3f}")
