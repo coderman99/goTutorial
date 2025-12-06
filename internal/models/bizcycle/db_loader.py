@@ -87,7 +87,7 @@ def load_indicator_data():
 
     engine = _get_engine()
     if engine:
-        df = pd.read_sql("SELECT * FROM econ_models", engine)
+        df = pd.read_sql("SELECT * FROM econ_model", engine)
 
         # Remove SP500 because we will load it separately
         df = df[df["series_id"] != "SP500"]
@@ -115,9 +115,8 @@ def load_sp500_from_db():
     if engine:
         spx_db = pd.read_sql(
             """
-            SELECT *
-            FROM econ_models
-            WHERE series_id = 'SP500'
+            SELECT timestamp, close
+            FROM sp500_models
             ORDER BY timestamp ASC
         """,
             engine,
@@ -126,7 +125,7 @@ def load_sp500_from_db():
         if spx_db.empty:
             raise ValueError("ERROR: SP500 not found in DB. Check series_id or name.")
 
-        sources.append(_normalize_sp500_monthly(spx_db.rename(columns={"value": "sp500"})))
+        sources.append(_normalize_sp500_monthly(spx_db.rename(columns={"close": "sp500"})))
 
     # Always include the packaged CSV so early history (1995-2009) is available
     # even when the database only contains recent daily observations.
