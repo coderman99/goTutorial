@@ -7,6 +7,15 @@ from sklearn.feature_selection import mutual_info_classif
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
+# Optional SHAP import: keep this isolated so missing extras never break parsing
+shap = None
+try:
+    import shap
+except Exception:  # pragma: no cover - optional dependency
+    shap = None
+
+# Prefer LightGBM when available, otherwise fall back gracefully
+_LIGHTGBM_AVAILABLE = False
 try:
     import shap
 except Exception:  # pragma: no cover - optional dependency
@@ -185,6 +194,9 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 
 def _fit_xgboost(X, y):
     """Fit an XGBoost classifier with time-aware validation for early stopping."""
+
+    # Encode categorical features before any filling/selection
+    X_encoded, feature_encoders = _encode_categoricals(X)
 
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
