@@ -42,7 +42,9 @@ def _normalize_sp500_monthly(df: pd.DataFrame, value_col: str = "sp500") -> pd.D
         return pd.DataFrame(columns=["sp500"])
 
     aligned = df.copy()
-    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"]).dt.tz_localize(None)
+    # Normalize timestamps to UTC then drop timezone info to avoid tz-aware
+    # conversion errors when different sources (DB vs CSV) are combined.
+    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"], utc=True).dt.tz_convert(None)
     aligned = aligned.rename(columns={value_col: "sp500"})
     aligned = aligned.set_index("timestamp").sort_index()
     aligned = aligned.resample("ME").last()
