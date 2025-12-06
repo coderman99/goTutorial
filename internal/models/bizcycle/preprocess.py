@@ -9,6 +9,12 @@ def preprocess_monthly(df):
 
     df = df.copy()
 
+    # If callers provided a timestamp index *and* a timestamp column, drop the
+    # index to avoid ambiguous lookups when sorting. The timestamp column is the
+    # single source of truth for downstream resampling.
+    if "timestamp" in df.index.names:
+        df = df.reset_index(drop=True)
+
     # Drop exact duplicate rows (common when appending new history) so they
     # are not double-counted during monthly aggregation.
     df = df.drop_duplicates()
