@@ -14,29 +14,23 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     shap = None
 
-# Prefer LightGBM when available, otherwise fall back gracefully
-_LIGHTGBM_AVAILABLE = False
-try:
-    from lightgbm import LGBMClassifier
-
-except ImportError:  # pragma: no cover - lightweight fallback
-    LGBMClassifier = None
-
+# Prefer XGBoost when available, otherwise fall back gracefully
+_XGBOOST_AVAILABLE = False
 try:
     from xgboost import XGBClassifier
 
     _XGBOOST_AVAILABLE = True
-except ImportError:  # pragma: no cover - lightweight fallback
+except ImportError:  # pragma: no cover - fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _XGBOOST_AVAILABLE = False
+    XGBClassifier = None
 
 
-# ---- Helper: wide conversion if you still have long-format monthly data ----
-def to_wide_monthly(df_long):
+# ---- Helper: wide conversion for long-format indicator data ----
+def to_wide_monthly(df_long, freq="M"):
     """
-    Convert long-format monthly indicators into a wide table without dropping
-    duplicate timestamps.
+    Convert long-format indicators into a wide table without dropping duplicate
+    timestamps. ``freq`` controls the aggregation endpoints (default monthly).
 
     Accepts either:
       - long format df with index = timestamp AND column 'name'
@@ -67,17 +61,17 @@ def to_wide_monthly(df_long):
     # Ensure index is unnamed to avoid accidental clashes after reset
     df.index.name = None
 
-    # Normalize timestamp to month-end for consistent grouping
+    # Normalize timestamp to requested end-of-period for consistent grouping
     df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
+    df["timestamp"] = df["timestamp"].dt.to_period(freq).dt.to_timestamp(how="end")
 
-    # Remove duplicate month/indicator rows that can appear when historical
+    # Remove duplicate indicator rows that can appear when historical
     # files are appended multiple times; keep the most recent observation.
     df = df.sort_values(["timestamp", "name"]).drop_duplicates(
         subset=["timestamp", "name"], keep="last"
     )
 
-    # Pivot to wide with aggregation (mean keeps all rows for the month)
+    # Pivot to wide with aggregation (mean keeps all rows for the period)
     wide = df.pivot_table(
         index="timestamp",
         columns="name",
@@ -91,6 +85,20 @@ def to_wide_monthly(df_long):
 
 
 # ---- Feature engineering ----
+KEY_INDICATORS = {
+    "Unemployment",
+    "PMI",
+    "IP",
+    "CPI",
+    "Housing starts",
+    "Yield curve",
+    "Leading indicators index",
+    "Credit spreads",
+    "NFIB sentiment",
+    "M2 YoY",
+}
+
+
 def make_features(wide, base_lags=(1, 3)):
     """
     Build a compact, leakage-safe feature set.
@@ -103,9 +111,12 @@ def make_features(wide, base_lags=(1, 3)):
     wide = wide.copy()
     wide = wide.loc[~wide.index.duplicated()].sort_index()
 
-    # Keep only numeric columns
+    # Keep only numeric columns that are not targets/composite scores to avoid
+    # accidentally shifting labels instead of features.
     numeric_cols = [c for c in wide.columns if pd.api.types.is_numeric_dtype(wide[c])]
-    X = wide[numeric_cols].copy()
+    target_like_cols = [c for c in numeric_cols if c.startswith("cycle_") or c.startswith("composite_cycle_")]
+    feature_columns = [c for c in numeric_cols if c not in target_like_cols]
+    X = wide[feature_columns].copy()
 
     # Standardize each indicator so scales are comparable
     for col in list(X.columns):
@@ -127,6 +138,11 @@ def make_features(wide, base_lags=(1, 3)):
         lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
         features = pd.concat([features, lagged], axis=1)
 
+    # Ensure key macro indicators remain available even if selection trims others.
+    missing_key_indicators = [k for k in KEY_INDICATORS if k not in X.columns]
+    if missing_key_indicators:
+        print("Warning: missing key indicators in features:", missing_key_indicators)
+
     features = features.dropna(how="all")
     return features
 
@@ -147,6 +163,10 @@ def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
     selected = score_series[score_series > min_score].head(max_features).index
     if selected.empty:
         selected = score_series.head(max_features).index
+
+    # Preserve diversity by forcing inclusion of key macro indicators when present
+    key_features_in_X = [col for col in X.columns if any(col.startswith(k) for k in KEY_INDICATORS)]
+    selected = pd.Index(selected).union(key_features_in_X)
 
     return X[selected], score_series
 
@@ -196,18 +216,6 @@ def _fit_xgboost(X, y):
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
 
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
-    # Encode categorical features before any filling/selection
-    X_encoded, feature_encoders = _encode_categoricals(X)
-
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
     X_filled = X_encoded.ffill()
@@ -235,38 +243,44 @@ def _fit_xgboost(X, y):
         X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
-    if _XGBOOST_AVAILABLE:
-        # Class balancing for imbalanced macro cycles
-        class_counts = pd.Series(y_encoded).value_counts()
-        total = class_counts.sum()
-        class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+    # Class balancing for imbalanced macro cycles
+    class_counts = pd.Series(y_encoded).value_counts()
+    total = class_counts.sum()
+    class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+    train_sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
 
-        model = LGBMClassifier(
-            n_estimators=400,
-            num_leaves=31,
-            max_depth=-1,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            objective="multiclass",
-            class_weight=class_weight,
-            random_state=42,
-            importance_type="gain",
-        )
+    if _XGBOOST_AVAILABLE:
+        xgb_params = {
+            "n_estimators": 500,
+            "max_depth": 5,
+            "learning_rate": 0.05,
+            "subsample": 0.8,
+            "colsample_bytree": 0.8,
+            "objective": "multi:softprob" if len(class_counts) > 2 else "binary:logistic",
+            "eval_metric": "mlogloss" if len(class_counts) > 2 else "logloss",
+            "random_state": 42,
+            "n_jobs": -1,
+        }
+
+        if len(class_counts) == 2 and class_counts.min() > 0:
+            xgb_params["scale_pos_weight"] = float(class_counts.max() / class_counts.min())
+
+        model = XGBClassifier(**xgb_params)
 
         if X_val is not None and y_val is not None:
             eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
             model.fit(
                 X_train,
                 y_train,
-                sample_weight=sample_weight,
+                sample_weight=train_sample_weight,
                 eval_set=[(X_val, y_val)],
-                eval_metric="multi_logloss",
+                sample_weight_eval_set=[eval_sample_weight],
                 verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded, sample_weight=pd.Series(y_encoded).map(class_weight))
-    else:  # pragma: no cover - fallback for environments without xgboost
+            full_sample_weight = pd.Series(y_encoded).map(class_weight).to_numpy()
+            model.fit(X_selected, y_encoded, sample_weight=full_sample_weight, verbose=False)
+    else:  # pragma: no cover - fallback for environments without XGBoost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -283,7 +297,7 @@ def _fit_xgboost(X, y):
     }
 
 
-def train_lightgbm_multi_horizon(
+def train_xgboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -491,4 +505,4 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_lightgbm_multi_horizon = train_lightgbm_multi_horizon
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon
