@@ -70,75 +70,60 @@ def to_wide_monthly(df_long):
         aggfunc="mean",
     )
 
-    wide = wide.sort_index().ffill().bfill()
+    wide = wide.sort_index().ffill()
 
     return wide
 
 
 # ---- Feature engineering ----
-def make_features(wide, add_lags=(1,3,6), add_3m_smooth=True):
+def make_features(wide, base_lags=(1, 3), return_lags=(1, 3, 6)):
     """
-    wide: DataFrame indexed by month with indicator columns
-    returns: X (features DF)
+    Build a compact, leakage-safe feature set.
+
+    - Standardize macro indicators with Z-scores.
+    - Keep only raw returns plus a few lags (no rolling/pct noise).
+    - Limit lagged indicators to trim the engineered feature count.
     """
-    X = wide.copy()
-    # Remove or coerce non-numeric columns before creating percentage changes
+
+    wide = wide.copy()
+    wide = wide.loc[~wide.index.duplicated()].sort_index()
+
+    # Keep only numeric columns
+    numeric_cols = [c for c in wide.columns if pd.api.types.is_numeric_dtype(wide[c])]
+    X = wide[numeric_cols].copy()
+
+    # Standardize each indicator so scales are comparable
     for col in list(X.columns):
-        if not pd.api.types.is_numeric_dtype(X[col]):
-            coerced = pd.to_numeric(X[col], errors="coerce")
-            if coerced.notna().any():
-                X[col] = coerced
-            else:
-                X = X.drop(columns=col)
+        std = X[col].std()
+        if std is None or std == 0 or pd.isna(std):
+            # Drop constant/non-informative columns early
+            X = X.drop(columns=col)
+            continue
+        mean = X[col].mean()
+        X[col] = (X[col] - mean) / std
 
-    # percent changes for level indicators can help
-    # for price-like series: compute pct_change; for levels you may not want changepct, but keep generic
-    numeric_cols = [c for c in X.columns if pd.api.types.is_numeric_dtype(X[c])]
-    for col in numeric_cols:
-        pct = X[col].pct_change()
-        # clip pct_change extremes so a single bad tick does not dominate scale
-        pct = pct.clip(lower=-5, upper=5)
-        X[f"{col}_pct"] = pct
+    features = pd.DataFrame(index=X.index)
 
-    # short and medium smoothing to emphasize persistent trends over noise
-    for window in (3, 6):
-        smoothed = X[numeric_cols].rolling(window=window, min_periods=1).mean()
-        smoothed = smoothed.add_suffix(f"_roll{window}")
-        X = pd.concat([X, smoothed], axis=1)
+    # Preserve standardized indicators (excluding returns which get special handling)
+    return_col = "returns" if "returns" in X.columns else None
+    indicator_cols = [c for c in X.columns if c != return_col]
+    features = pd.concat([features, X[indicator_cols]], axis=1)
 
-    # 3-month smoothed returns for SP500 if present (example column 'StockMarketIndex' or 'SP500' depending)
-    sp_name_candidates = ['StockMarketIndex', 'SP500', 'SPX', 'sp500', 'StockMarketIndex']
-    sp_col = None
-    for p in sp_name_candidates:
-        if p in X.columns:
-            sp_col = p
-            break
-    if sp_col and add_3m_smooth:
-        X['sp_3m_smooth'] = X[sp_col].pct_change(3)
+    for lag in base_lags:
+        lagged = X[indicator_cols].shift(lag).add_suffix(f"_lag{lag}")
+        features = pd.concat([features, lagged], axis=1)
 
-    # Lag features
-    for lag in add_lags:
-        X_lag = X.shift(lag).add_suffix(f"_lag{lag}")
-        X = pd.concat([X, X_lag], axis=1)
+    # Add return features only after resampled alignment
+    if return_col:
+        features["returns"] = wide[return_col]
+        for lag in return_lags:
+            features[f"returns_lag{lag}"] = wide[return_col].shift(lag)
 
-    # Drop rows with too many missing values
-    X = X.dropna(thresh=int(X.shape[1]*0.5))
-
-    # Remove columns with >50% NaN or constant
-    X = X.loc[:, X.isna().mean() < 0.5]
-    # Drop near-constant columns that add noise but little signal
-    constant_mask = X.nunique(dropna=False) <= 1
-    if constant_mask.any():
-        X = X.loc[:, ~constant_mask]
-    # Replace infinities from pct_change or other transforms
-    X = X.replace([np.inf, -np.inf], np.nan)
-    # final fill
-    X = X.ffill().bfill()
-
-    return X
+    features = features.dropna(how="all")
+    return features
 
 
-def _screen_features_by_importance(X, y, max_features=150, min_score=0.0):
+def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
     """Select top predictive features using mutual information.
 
     The expanded Leading indicator set increases the number of columns and
@@ -176,12 +161,12 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
 def _fit_lightgbm(X, y):
     """Fit a LightGBM classifier with time-aware validation for early stopping."""
 
-    X_filled = X.ffill().bfill()
+    X_filled = X.ffill()
 
     label_encoder = LabelEncoder().fit(y)
     y_encoded = label_encoder.transform(y)
 
-    max_feats = max(20, min(200, X_filled.shape[1]))
+    max_feats = max(20, min(60, X_filled.shape[1]))
     X_selected, feature_scores = _screen_features_by_importance(
         X_filled, y_encoded, max_features=max_feats, min_score=0.0
     )
@@ -191,6 +176,10 @@ def _fit_lightgbm(X, y):
     )
 
     if _LIGHTGBM_AVAILABLE:
+        # Class balancing for imbalanced macro cycles
+        class_counts = pd.Series(y_encoded).value_counts()
+        total = class_counts.sum()
+        class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
         model = LGBMClassifier(
             n_estimators=800,
             num_leaves=63,
@@ -198,6 +187,7 @@ def _fit_lightgbm(X, y):
             objective="multiclass",
             random_state=42,
             verbosity=-1,
+            class_weight=class_weight,
         )
 
         if X_val is not None and y_val is not None:
