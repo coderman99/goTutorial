@@ -118,7 +118,7 @@ func PopulateIndicators(db *gorm.DB) error {
 				fmt.Sscanf(obs.Value, "%f", &val)
 				dateParsed, _ := time.Parse("2006-01-02", obs.Date)
 
-				record := indicators_model.EconModel{
+				record := indicators_model.EconIndicatorModel{
 					Name:         indicatorName,
 					SeriesID:     seriesID,
 					Value:        val,
@@ -161,7 +161,7 @@ func main() {
 		panic("Failed to connect to DB: " + err.Error())
 	}
 
-	if err := db.AutoMigrate(&indicators_model.EconModel{}); err != nil {
+	if err := db.AutoMigrate(&indicators_model.EconIndicatorModel{}); err != nil {
 		panic("Migration failed: " + err.Error())
 	}
 

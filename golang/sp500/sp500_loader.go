@@ -13,22 +13,14 @@ import (
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+
+	indicators_model "goTutorial/internal/models/indicators"
 )
 
-type IndicatorModel struct {
-	ID           uint      `gorm:"primaryKey"`
-	Name         string    `gorm:"column:name"`
-	SeriesID     string    `gorm:"column:series_id"`
-	Value        float64   `gorm:"column:value"`
-	Timestamp    time.Time `gorm:"column:timestamp"`
-	IndicatorCat string    `gorm:"column:indicator_cat"`
-}
-
-func (IndicatorModel) TableName() string {
-	return "indicator_models"
-}
-
-func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
+// ----------------------------
+// Load CSV into SP500Model rows
+// ----------------------------
+func loadSP500Rows(csvPath string) ([]indicators_model.SP500Model, error) {
 	file, err := os.Open(csvPath)
 	if err != nil {
 		return nil, fmt.Errorf("open csv: %w", err)
@@ -44,23 +36,18 @@ func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
 		return nil, errors.New("csv missing data rows")
 	}
 
-	const (
-		indicatorName = "StockMarketIndex"
-		seriesID      = "SP500"
-		indicatorCat  = "leading"
-	)
-
-	rows := make([]IndicatorModel, 0, len(records)-1)
+	rows := make([]indicators_model.SP500Model, 0, len(records)-1)
 	for i, rec := range records {
 		if i == 0 {
-			continue
+			continue // header
 		}
 
 		if len(rec) < 2 {
 			return nil, fmt.Errorf("row %d malformed: %#v", i+1, rec)
 		}
 
-		ts, err := time.ParseInLocation("2006-01-02", rec[0], time.UTC)
+		// CSV date = "YYYY-MM-DD"
+		ts, err := time.Parse("2006-01-02", rec[0])
 		if err != nil {
 			return nil, fmt.Errorf("row %d invalid date %q: %w", i+1, rec[0], err)
 		}
@@ -70,27 +57,29 @@ func loadSP500Rows(csvPath string) ([]IndicatorModel, error) {
 			return nil, fmt.Errorf("row %d invalid close %q: %w", i+1, rec[1], err)
 		}
 
-		rows = append(rows, IndicatorModel{
-			Name:         indicatorName,
-			SeriesID:     seriesID,
-			Value:        closeVal,
-			Timestamp:    ts,
-			IndicatorCat: indicatorCat,
+		rows = append(rows, indicators_model.SP500Model{
+			Timestamp: ts,
+			Close:     closeVal,
 		})
 	}
 
 	return rows, nil
 }
 
+// ----------------------------
+// CSV next to script
+// ----------------------------
 func resolveCSVPath() (string, error) {
-	// CSV is next to this Go script
 	csvPath := "./sp500.csv"
 	if _, err := os.Stat(csvPath); err == nil {
 		return csvPath, nil
 	}
-	return "", fmt.Errorf("sp500.csv not found next to script")
+	return "", fmt.Errorf("sp500_monthly.csv not found next to script")
 }
 
+// ----------------------------
+// Connect to Postgres
+// ----------------------------
 func openDB() (*gorm.DB, error) {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env")
@@ -107,6 +96,9 @@ func openDB() (*gorm.DB, error) {
 	return gorm.Open(postgres.Open(dsn), &gorm.Config{})
 }
 
+// ----------------------------
+// Main
+// ----------------------------
 func main() {
 	csvPath, err := resolveCSVPath()
 	if err != nil {
@@ -123,18 +115,18 @@ func main() {
 		log.Fatalf("DB connect: %v", err)
 	}
 
-	if err := db.AutoMigrate(&IndicatorModel{}); err != nil {
+	// Ensure table + unique timestamp index exists
+	if err := db.AutoMigrate(&indicators_model.SP500Model{}); err != nil {
 		log.Fatalf("Migrate table: %v", err)
 	}
 
+	// Add unique constraint if not exists
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sp500_timestamp ON sp500_models (timestamp);`)
+
+	// Upsert
 	if err := db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "series_id"}, {Name: "timestamp"}},
-		DoUpdates: clause.Assignments(
-			map[string]interface{}{
-				"value":         gorm.Expr("excluded.value"),
-				"indicator_cat": gorm.Expr("excluded.indicator_cat"),
-				"name":          gorm.Expr("excluded.name"),
-			}),
+		Columns:   []clause.Column{{Name: "timestamp"}},
+		DoUpdates: clause.Assignments(map[string]interface{}{"close": gorm.Expr("EXCLUDED.close")}),
 	}).CreateInBatches(rows, 200).Error; err != nil {
 		log.Fatalf("Insert rows: %v", err)
 	}
