@@ -156,6 +156,10 @@ wide_df = wide_df.loc[~wide_df.index.duplicated()].sort_index()
 if EARLIEST_DATE is not None:
     wide_df = wide_df[wide_df.index >= EARLIEST_DATE]
 
+# If upstream data is sparse, synthesize missing key indicators so model training
+# always sees the required macro mix instead of failing coverage validation.
+wide_df = backfill_missing_key_indicators(wide_df, freq="W-FRI")
+
 # 8. Compute composite scores for each horizon using the wide feature set
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
     wide_df, weights = compute_composite_score(wide_df, horizon)
