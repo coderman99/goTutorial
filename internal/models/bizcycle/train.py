@@ -13,14 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from internal.models.bizcycle.db_loader import (
-    load_indicator_data,
-    load_sp500_from_db,
-)
-from internal.models.bizcycle.preprocess import (
-    preprocess_weekly,
-    backfill_missing_key_indicators,
-)
+from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
+from internal.models.bizcycle.preprocess import preprocess_weekly
 from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
 from internal.models.bizcycle.composite_score import compute_composite_score
@@ -69,7 +63,6 @@ def validate_key_indicator_coverage(df: pd.DataFrame):
         )
 
     print("\nKey macro indicators confirmed:", sorted(present))
-
 
 # ---------------------------------------------
 # 1. Load indicator data

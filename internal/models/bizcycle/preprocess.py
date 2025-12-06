@@ -1,12 +1,6 @@
 # preprocess.py
 import pandas as pd
 
-from .db_loader import synthesize_key_indicators
-
-# Lazy import to avoid circular dependency at module import time
-# (to_wide_monthly and KEY_INDICATORS live in enhance_model.py).
-
-
 CANONICAL_INDICATOR_ALIASES = {
     "unemployment rate": "Unemployment",
     "unemployment": "Unemployment",
@@ -77,86 +71,38 @@ def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
 
     # Sort before resampling to make "last" deterministic when multiple points
     # land in the same bucket (e.g., daily SP500 history vs. legacy monthly rows).
-    sort_cols = [c for c in ["timestamp", "name", "id"] if c in df.columns]
+    sort_cols = [c for c in ["name", "timestamp", "id"] if c in df.columns]
     df = df.sort_values(sort_cols, na_position="last")
 
-    # Preserve per-indicator metadata (series_id + category) so we can
-    # reconstruct a long-form table after resampling a wide pivot.
-    meta_cols = [c for c in ["series_id", "indicator_cat"] if c in df.columns]
-    metadata = df.groupby("name")[meta_cols].first() if meta_cols else None
+    # Normalize using a per-indicator resample so we never overwrite earlier
+    # history when new data ranges are appended.
+    def _resample_group(group: pd.DataFrame) -> pd.DataFrame:
+        group = group.set_index("timestamp").sort_index()
+        resampled = group.resample(freq).last()
+        resampled.index = resampled.index.to_period(freq).to_timestamp(how="end")
+        # Keep earliest observation when history is appended later
+        resampled = resampled[~resampled.index.duplicated(keep="first")]
+        resampled["name"] = group["name"].iloc[0]
+        return resampled
 
-    # Pivot to wide, resample once, then stack back to long to avoid losing
-    # indicators due to per-group resample quirks.
-    wide = df.pivot_table(
-        index="timestamp",
-        columns="name",
-        values="value",
-        aggfunc="last",
-    ).sort_index()
-
-    resampled = wide.resample(freq).last()
-    resampled.index = resampled.index.to_period(freq).to_timestamp(how="end")
-    resampled = resampled[~resampled.index.duplicated(keep="first")]
-
-    long_df = resampled.stack(dropna=False).reset_index()
-    long_df = long_df.rename(columns={"level_1": "name", 0: "value"})
-
-    if metadata is not None:
-        long_df = long_df.merge(
-            metadata.reset_index(),
-            on="name",
-            how="left",
-        )
+    aggregated = df.groupby("name", group_keys=False).apply(_resample_group)
+    aggregated = aggregated.reset_index().rename(columns={"index": "timestamp"})
 
     category_map = {
         "Leading": 1,
         "Lagging": 2,
         "Coincident": 3,
-        "Coincidental": 3,
+        "Coincidental": 3
     }
-    long_df["indicator_cat_code"] = (
-        long_df.get("indicator_cat")
+    aggregated["indicator_cat_code"] = (
+        aggregated["indicator_cat"]
         .map(category_map)
         .fillna(0)
         .astype(int)
     )
 
-    # Keep the latest observation for each (timestamp, name) pair without
-    # discarding other indicators that share the same timestamp.
-    long_df = long_df.drop_duplicates(subset=["timestamp", "name"], keep="last")
-    long_df = long_df.set_index("timestamp")
-    long_df = long_df.sort_index()
+    aggregated = aggregated.set_index("timestamp")
+    aggregated = aggregated[~aggregated.index.duplicated(keep="first")]
+    aggregated = aggregated.sort_index()
 
-    return long_df
-
-
-def backfill_missing_key_indicators(wide_df: pd.DataFrame, freq: str = "W-FRI") -> pd.DataFrame:
-    """Add synthetic key indicator columns when upstream data is incomplete.
-
-    Keeping this helper in ``preprocess`` makes it reusable from both the training
-    script and any data quality checks without depending on where it is invoked.
-    """
-
-    # Import lazily to avoid circular dependency at module import time.
-    from .enhance_model import KEY_INDICATORS, to_wide_monthly
-
-    present = {col for col in wide_df.columns if col in KEY_INDICATORS}
-    missing = KEY_INDICATORS - present
-    if not missing:
-        return wide_df
-
-    synthetic_long = synthesize_key_indicators(freq=freq)
-    synthetic_long = synthetic_long[synthetic_long["name"].isin(missing)]
-
-    value_wide = to_wide_monthly(synthetic_long[["name", "value"]], freq=freq)
-    cat_wide = synthetic_long.pivot_table(
-        index=synthetic_long.index,
-        columns="name",
-        values="indicator_cat_code",
-        aggfunc="first",
-    ).add_suffix("_catcode")
-
-    wide_df = wide_df.join(value_wide, how="left")
-    wide_df = wide_df.join(cat_wide, how="left")
-
-    return wide_df
+    return aggregated
