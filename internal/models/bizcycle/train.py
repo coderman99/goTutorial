@@ -24,6 +24,7 @@ from internal.models.bizcycle.enhance_model import (
     make_features,
     train_xgboost_multi_horizon,
     predict_and_explain,
+    backfill_missing_key_indicators,
 )
 from internal.models.bizcycle.config import get_database_url
 
