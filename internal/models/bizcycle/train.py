@@ -14,14 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
-from internal.models.bizcycle.preprocess import preprocess_monthly
+from internal.models.bizcycle.preprocess import preprocess_weekly
 from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
 from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
-    train_lightgbm_multi_horizon,
+    train_xgboost_multi_horizon,
     predict_and_explain,
 )
 from internal.models.bizcycle.config import get_database_url
@@ -55,11 +55,11 @@ print(f"Loaded indicator rows: {len(df):,}")
 print(df.head())
 
 # ---------------------------------------------
-# 2. Convert indicators → Monthly frequency
+# 2. Convert indicators → End-of-week frequency
 # ---------------------------------------------
-monthly = preprocess_monthly(df)
-print(f"\nMonthly Preprocessed ({len(monthly):,} rows)")
-print(monthly.head())
+weekly = preprocess_weekly(df)
+print(f"\nWeekly Preprocessed ({len(weekly):,} rows)")
+print(weekly.head())
 
 # ---------------------------------------------
 # 3. Load SP500 from database (or fallback CSV)
@@ -71,9 +71,9 @@ print("\nSP500 Raw:")
 print(sp500.head())
 
 # ---------------------------------------------
-# 4. Label business cycle phases
+# 4. Label business cycle phases (labels are upsampled to weekly)
 # ---------------------------------------------
-labeled_df = label_business_cycle(monthly, sp500)
+labeled_df = label_business_cycle(weekly, sp500, target_freq="W-FRI")
 labeled_df = labeled_df[~labeled_df.index.duplicated(keep="last")]
 
 if EARLIEST_DATE is not None:
@@ -83,9 +83,9 @@ print(f"\nBusiness Cycle Labeled ({len(labeled_df):,} rows)")
 print(labeled_df.head())
 
 # ---------------------------------------------
-# 5. Create future prediction targets (1m, 3m, 6m)
+# 5. Create future prediction targets (approx 1m, 3m, 6m in weeks)
 # ---------------------------------------------
-labeled_df = create_future_targets(labeled_df)
+labeled_df = create_future_targets(labeled_df, freq="W-FRI")
 print("\nFuture Targets Created")
 print(labeled_df.head())
 
@@ -110,10 +110,10 @@ print(labeled_df.head())
 # ---------------------------------------------
 # 7. Convert into WIDE format for ML
 # ---------------------------------------------
-# Build a single row per month for indicator values and metadata
-indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]])
+# Build a single row per week for indicator values and metadata
+indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]], freq="W-FRI")
 indicator_cat_wide = labeled_df.pivot_table(
-    index=labeled_df.index.to_period("M").to_timestamp("M"),
+    index=labeled_df.index,
     columns="name",
     values="indicator_cat_code",
     aggfunc="first",
@@ -183,8 +183,8 @@ print(
     f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
 )
 
-# 11. Train multi-horizon models with LightGBM classifiers
-pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
+# 11. Train multi-horizon models with XGBoost classifiers
+pipelines, accuracies = train_xgboost_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():

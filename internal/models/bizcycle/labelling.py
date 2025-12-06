@@ -1,23 +1,35 @@
 import pandas as pd
 
+
 def compute_smoothed_returns(sp500):
     return sp500.pct_change(periods=3)
 
-def label_business_cycle(df, sp500):
+
+def label_business_cycle(df, sp500, target_freq="M"):
+    """
+    Label business cycle phases.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Indicator observations indexed by timestamp.
+    sp500 : DataFrame
+        S&P 500 levels indexed by timestamp (monthly or daily).
+    target_freq : str
+        Frequency to align labels to. Use "W-FRI" for end-of-week training.
+    """
+
     # force tz-naive
     df.index = pd.to_datetime(df.index).tz_localize(None)
     sp500.index = pd.to_datetime(sp500.index).tz_localize(None)
 
-    # ensure end-of-month for BOTH
-    df.index = df.index.to_period("M").to_timestamp("M")
-    sp500.index = sp500.index.to_period("M").to_timestamp("M")
-
+    # Normalize sp500 to month-end before applying business-cycle rules
     sp500 = sp500.sort_index().copy()
+    sp500.index = sp500.index.to_period("M").to_timestamp("M")
 
     # compute returns
     sp500["returns"] = sp500["sp500"].pct_change()
-    
-    sp500['smoothed_returns'] = compute_smoothed_returns(sp500['returns'])
+    sp500["smoothed_returns"] = compute_smoothed_returns(sp500["returns"])
 
     # cycle label rules
     labels = []
@@ -32,6 +44,15 @@ def label_business_cycle(df, sp500):
             labels.append("Peak")
 
     sp500["cycle_phase"] = labels
+
+    # Resample labels/returns to the requested target frequency so weekly
+    # features can be aligned even when the underlying target is monthly-only.
+    if target_freq != "M":
+        sp500 = sp500.resample(target_freq).ffill()
+        sp500.index = sp500.index.to_period(target_freq).to_timestamp(how="end")
+
+    # Align df to the same frequency endpoints
+    df.index = df.index.to_period(target_freq).to_timestamp(how="end")
 
     # MERGE — will now work because timestamps align
     merged = df.merge(
@@ -51,16 +72,20 @@ def label_business_cycle(df, sp500):
     return merged
 
 
-def create_future_cycle_targets(labeled_df):
+def create_future_cycle_targets(labeled_df, target_freq="M"):
     """
     Adds 1m, 3m, and 6m future business cycle labels for supervised learning.
     """
     out = labeled_df.copy()
 
-    # Shift cycle labels backward so future labels appear on current month
-    out["cycle_1m"] = out["cycle_phase"].shift(-1)
-    out["cycle_3m"] = out["cycle_phase"].shift(-3)
-    out["cycle_6m"] = out["cycle_phase"].shift(-6)
+    if target_freq.startswith("W"):
+        offsets = {"cycle_1m": 4, "cycle_3m": 12, "cycle_6m": 24}
+    else:
+        offsets = {"cycle_1m": 1, "cycle_3m": 3, "cycle_6m": 6}
+
+    # Shift cycle labels backward so future labels appear on current timestamp
+    for col, step in offsets.items():
+        out[col] = out["cycle_phase"].shift(-step)
 
     # Drop rows where future labels are missing
     out = out.dropna(subset=["cycle_1m", "cycle_3m", "cycle_6m"], how="all")
