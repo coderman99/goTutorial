@@ -14,14 +14,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
-from internal.models.bizcycle.preprocess import preprocess_monthly
+from internal.models.bizcycle.preprocess import preprocess_weekly
 from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
 from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
     to_wide_monthly,
     make_features,
-    train_lightgbm_multi_horizon,
+    train_xgboost_multi_horizon,
     predict_and_explain,
 )
 from internal.models.bizcycle.config import get_database_url
@@ -55,11 +55,11 @@ print(f"Loaded indicator rows: {len(df):,}")
 print(df.head())
 
 # ---------------------------------------------
-# 2. Convert indicators → Monthly frequency
+# 2. Convert indicators → End-of-week frequency
 # ---------------------------------------------
-monthly = preprocess_monthly(df)
-print(f"\nMonthly Preprocessed ({len(monthly):,} rows)")
-print(monthly.head())
+weekly = preprocess_weekly(df)
+print(f"\nWeekly Preprocessed ({len(weekly):,} rows)")
+print(weekly.head())
 
 # ---------------------------------------------
 # 3. Load SP500 from database (or fallback CSV)
@@ -71,9 +71,9 @@ print("\nSP500 Raw:")
 print(sp500.head())
 
 # ---------------------------------------------
-# 4. Label business cycle phases
+# 4. Label business cycle phases (labels are upsampled to weekly)
 # ---------------------------------------------
-labeled_df = label_business_cycle(monthly, sp500)
+labeled_df = label_business_cycle(weekly, sp500, target_freq="W-FRI")
 labeled_df = labeled_df[~labeled_df.index.duplicated(keep="last")]
 
 if EARLIEST_DATE is not None:
@@ -83,9 +83,9 @@ print(f"\nBusiness Cycle Labeled ({len(labeled_df):,} rows)")
 print(labeled_df.head())
 
 # ---------------------------------------------
-# 5. Create future prediction targets (1m, 3m, 6m)
+# 5. Create future prediction targets (approx 1m, 3m, 6m in weeks)
 # ---------------------------------------------
-labeled_df = create_future_targets(labeled_df)
+labeled_df = create_future_targets(labeled_df, freq="W-FRI")
 print("\nFuture Targets Created")
 print(labeled_df.head())
 
@@ -93,9 +93,11 @@ print(labeled_df.head())
 # 6. Compute Composite Scores for each horizon
 # ---------------------------------------------
 # Remove stock/return-derived columns before computing composite scores to ensure
-# the weights only reflect macro indicators.
-if "returns" in labeled_df.columns:
-    labeled_df = labeled_df.drop(columns=["returns"])
+# the weights only reflect macro indicators and to avoid leakage from S&P 500 returns.
+return_cols = [c for c in labeled_df.columns if "return" in c.lower()]
+if return_cols:
+    labeled_df = labeled_df.drop(columns=return_cols)
+    print("Dropped return-derived columns before composite scoring:", return_cols)
 
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
     labeled_df, weights = compute_composite_score(labeled_df, horizon)
@@ -108,10 +110,10 @@ print(labeled_df.head())
 # ---------------------------------------------
 # 7. Convert into WIDE format for ML
 # ---------------------------------------------
-# Build a single row per month for indicator values and metadata
-indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]])
+# Build a single row per week for indicator values and metadata
+indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]], freq="W-FRI")
 indicator_cat_wide = labeled_df.pivot_table(
-    index=labeled_df.index.to_period("M").to_timestamp("M"),
+    index=labeled_df.index,
     columns="name",
     values="indicator_cat_code",
     aggfunc="first",
@@ -144,14 +146,20 @@ print(wide_df.head())
 # 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
 composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
 feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
-# Strip any stock-market return-derived columns before feature engineering
+# Strip any stock-market return-derived columns before feature engineering and
+# double-check that no S&P 500 return features leak into the same row as the target.
 feature_df = feature_df[[c for c in feature_df.columns if "return" not in c.lower()]]
+
+print("\nBase feature columns prior to lagging (count={}):".format(len(feature_df.columns)))
+print(sorted(feature_df.columns))
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
 print(
     f"\nFeature rows after engineering: {len(X):,} "
     f"(from labeled rows: {len(labeled_df):,})"
 )
+print("Engineered feature columns (count={}):".format(len(X.columns)))
+print(sorted(X.columns))
 
 # Remove constant columns that provide no predictive signal
 X, constant_cols = drop_constant_columns(X)
@@ -175,8 +183,8 @@ print(
     f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
 )
 
-# 11. Train multi-horizon models with LightGBM classifiers
-pipelines, accuracies = train_lightgbm_multi_horizon(X, df_targets)
+# 11. Train multi-horizon models with XGBoost classifiers
+pipelines, accuracies = train_xgboost_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
 for horizon, acc in accuracies.items():
