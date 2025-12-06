@@ -311,9 +311,17 @@ def train_xgboost_multi_horizon(
 def _summarize_feature_impacts(feature_names, importances, top_n):
     """Return per-feature and aggregated indicator impacts."""
     feature_list = list(feature_names)
+    # Ensure importances are 1-D and aligned with features
+    impacts_array = np.asarray(importances)
+    if impacts_array.ndim > 1:
+        impacts_array = impacts_array.reshape(-1, impacts_array.shape[-1]).mean(axis=0)
+
+    if impacts_array.size != len(feature_list):
+        impacts_array = np.resize(impacts_array, len(feature_list))
+
     # absolute magnitude for ranking
     impact_series = (
-        pd.Series(importances, index=feature_list)
+        pd.Series(impacts_array, index=feature_list)
         .abs()
         .sort_values(ascending=False)
     )
@@ -446,9 +454,16 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
                 explainer = shap.TreeExplainer(estimator)
                 shap_values = explainer.shap_values(X_encoded)
                 if isinstance(shap_values, list):
-                    shap_array = shap_values[pred_idx][0]
+                    shap_array = np.asarray(shap_values[pred_idx][0])
+                elif isinstance(shap_values, np.ndarray):
+                    if shap_values.ndim == 3:  # (rows, classes, features)
+                        shap_array = shap_values[0, pred_idx, :]
+                    elif shap_values.ndim == 2:  # (rows, features)
+                        shap_array = shap_values[0]
+                    else:
+                        shap_array = shap_values.squeeze()
                 else:
-                    shap_array = shap_values[0]
+                    shap_array = None
                 shap_impacts = shap_array
             except Exception:
                 shap_impacts = None
