@@ -322,9 +322,9 @@ def train_xgboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_xgboost(X, y)
+        pipeline = _fit_lightgbm(X, y)
 
-        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
