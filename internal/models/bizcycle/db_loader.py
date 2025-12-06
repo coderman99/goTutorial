@@ -13,20 +13,7 @@ import pandas as pd
 from sqlalchemy import create_engine
 
 from .config import DATABASE_URL
-
-
-KEY_INDICATORS = {
-    "Unemployment",
-    "PMI",
-    "IP",
-    "CPI",
-    "Housing starts",
-    "Yield curve",
-    "Leading indicators index",
-    "Credit spreads",
-    "NFIB sentiment",
-    "M2 YoY",
-}
+from .indicator_definitions import KEY_INDICATORS
 
 
 def _get_engine():
