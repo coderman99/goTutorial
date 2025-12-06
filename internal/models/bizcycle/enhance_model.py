@@ -14,23 +14,23 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     shap = None
 
-# Prefer LightGBM when available, otherwise fall back gracefully
-_LIGHTGBM_AVAILABLE = False
+# Prefer XGBoost when available, otherwise fall back gracefully
+_XGBOOST_AVAILABLE = False
 try:
-    from lightgbm import LGBMClassifier
+    from xgboost import XGBClassifier
 
-    _LIGHTGBM_AVAILABLE = True
-except ImportError:  # pragma: no cover - lightweight fallback
+    _XGBOOST_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    LGBMClassifier = None
+    XGBClassifier = None
 
 
-# ---- Helper: wide conversion if you still have long-format monthly data ----
-def to_wide_monthly(df_long):
+# ---- Helper: wide conversion for long-format indicator data ----
+def to_wide_monthly(df_long, freq="M"):
     """
-    Convert long-format monthly indicators into a wide table without dropping
-    duplicate timestamps.
+    Convert long-format indicators into a wide table without dropping duplicate
+    timestamps. ``freq`` controls the aggregation endpoints (default monthly).
 
     Accepts either:
       - long format df with index = timestamp AND column 'name'
@@ -61,17 +61,17 @@ def to_wide_monthly(df_long):
     # Ensure index is unnamed to avoid accidental clashes after reset
     df.index.name = None
 
-    # Normalize timestamp to month-end for consistent grouping
+    # Normalize timestamp to requested end-of-period for consistent grouping
     df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df["timestamp"] = df["timestamp"].dt.to_period("M").dt.to_timestamp("M")
+    df["timestamp"] = df["timestamp"].dt.to_period(freq).dt.to_timestamp(how="end")
 
-    # Remove duplicate month/indicator rows that can appear when historical
+    # Remove duplicate indicator rows that can appear when historical
     # files are appended multiple times; keep the most recent observation.
     df = df.sort_values(["timestamp", "name"]).drop_duplicates(
         subset=["timestamp", "name"], keep="last"
     )
 
-    # Pivot to wide with aggregation (mean keeps all rows for the month)
+    # Pivot to wide with aggregation (mean keeps all rows for the period)
     wide = df.pivot_table(
         index="timestamp",
         columns="name",
@@ -210,8 +210,8 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_lightgbm(X, y):
-    """Fit a LightGBM classifier with time-aware validation for early stopping."""
+def _fit_xgboost(X, y):
+    """Fit an XGBoost classifier with time-aware validation for early stopping."""
 
     # Encode categorical features before any filling/selection
     X_encoded, feature_encoders = _encode_categoricals(X)
@@ -243,34 +243,29 @@ def _fit_lightgbm(X, y):
         X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
-    if _LIGHTGBM_AVAILABLE:
-        # Class balancing for imbalanced macro cycles
-        class_counts = pd.Series(y_encoded).value_counts()
-        total = class_counts.sum()
-        class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
-        train_sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
+    # Class balancing for imbalanced macro cycles
+    class_counts = pd.Series(y_encoded).value_counts()
+    total = class_counts.sum()
+    class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
+    train_sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
 
-        lgbm_params = {
-            "n_estimators": 400,
-            "num_leaves": 31,
-            "max_depth": -1,
+    if _XGBOOST_AVAILABLE:
+        xgb_params = {
+            "n_estimators": 500,
+            "max_depth": 5,
             "learning_rate": 0.05,
             "subsample": 0.8,
             "colsample_bytree": 0.8,
-            "objective": "multiclass",
-            "class_weight": class_weight,
+            "objective": "multi:softprob" if len(class_counts) > 2 else "binary:logistic",
+            "eval_metric": "mlogloss" if len(class_counts) > 2 else "logloss",
             "random_state": 42,
-            "importance_type": "gain",
+            "n_jobs": -1,
         }
 
-        if len(class_counts) == 2:
-            # Help LightGBM balance binary classes automatically
-            lgbm_params.update({
-                "is_unbalance": True,
-                "scale_pos_weight": float(class_counts.max() / class_counts.min()),
-            })
+        if len(class_counts) == 2 and class_counts.min() > 0:
+            xgb_params["scale_pos_weight"] = float(class_counts.max() / class_counts.min())
 
-        model = LGBMClassifier(**lgbm_params)
+        model = XGBClassifier(**xgb_params)
 
         if X_val is not None and y_val is not None:
             eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
@@ -279,12 +274,13 @@ def _fit_lightgbm(X, y):
                 y_train,
                 sample_weight=train_sample_weight,
                 eval_set=[(X_val, y_val)],
-                eval_metric="multi_logloss",
+                sample_weight_eval_set=[eval_sample_weight],
+                verbose=False,
             )
         else:
             full_sample_weight = pd.Series(y_encoded).map(class_weight).to_numpy()
-            model.fit(X_selected, y_encoded, sample_weight=full_sample_weight)
-    else:  # pragma: no cover - fallback for environments without LightGBM
+            model.fit(X_selected, y_encoded, sample_weight=full_sample_weight, verbose=False)
+    else:  # pragma: no cover - fallback for environments without XGBoost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -301,7 +297,7 @@ def _fit_lightgbm(X, y):
     }
 
 
-def train_lightgbm_multi_horizon(
+def train_xgboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -509,4 +505,4 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_lightgbm_multi_horizon = train_lightgbm_multi_horizon
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon
