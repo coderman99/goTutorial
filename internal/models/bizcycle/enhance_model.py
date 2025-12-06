@@ -8,13 +8,13 @@ from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
 
 try:
-    from lightgbm import LGBMClassifier
+    from xgboost import XGBClassifier
 
-    _LIGHTGBM_AVAILABLE = True
+    _XGBOOST_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _LIGHTGBM_AVAILABLE = False
+    _XGBOOST_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -158,8 +158,8 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_lightgbm(X, y):
-    """Fit a LightGBM classifier with time-aware validation for early stopping."""
+def _fit_xgboost(X, y):
+    """Fit an XGBoost classifier with time-aware validation for early stopping."""
 
     # Forward-fill to avoid peeking into the future, then drop any rows that
     # still contain gaps so mutual_info and training do not receive NaNs.
@@ -188,31 +188,38 @@ def _fit_lightgbm(X, y):
         X_selected, pd.Series(y_encoded, index=X_selected.index), val_fraction=0.2
     )
 
-    if _LIGHTGBM_AVAILABLE:
+    if _XGBOOST_AVAILABLE:
         # Class balancing for imbalanced macro cycles
         class_counts = pd.Series(y_encoded).value_counts()
         total = class_counts.sum()
         class_weight = {cls: total / (len(class_counts) * cnt) for cls, cnt in class_counts.items()}
-        model = LGBMClassifier(
+        sample_weight = pd.Series(y_train).map(class_weight).to_numpy()
+        model = XGBClassifier(
             n_estimators=800,
-            num_leaves=63,
+            max_depth=6,
             learning_rate=0.05,
-            objective="multiclass",
+            subsample=0.8,
+            colsample_bytree=0.8,
+            objective="multi:softprob",
             random_state=42,
-            verbosity=-1,
-            class_weight=class_weight,
+            eval_metric="mlogloss",
+            tree_method="hist",
+            verbosity=0,
         )
 
         if X_val is not None and y_val is not None:
+            eval_sample_weight = pd.Series(y_val).map(class_weight).to_numpy()
             model.fit(
                 X_train,
                 y_train,
+                sample_weight=sample_weight,
                 eval_set=[(X_val, y_val)],
-                eval_metric="multi_logloss",
+                sample_weight_eval_set=[eval_sample_weight],
+                verbose=False,
             )
         else:
-            model.fit(X_selected, y_encoded)
-    else:  # pragma: no cover - fallback for environments without lightgbm
+            model.fit(X_selected, y_encoded, sample_weight=pd.Series(y_encoded).map(class_weight))
+    else:  # pragma: no cover - fallback for environments without xgboost
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -226,7 +233,7 @@ def _fit_lightgbm(X, y):
         "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
-def train_lightgbm_multi_horizon(
+def train_xgboost_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -251,9 +258,9 @@ def train_lightgbm_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_lightgbm(X, y)
+        pipeline = _fit_xgboost(X, y)
 
-        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
@@ -384,5 +391,5 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_catboost_multi_horizon = train_lightgbm_multi_horizon
-train_xgboost_multi_horizon = train_lightgbm_multi_horizon
+train_catboost_multi_horizon = train_xgboost_multi_horizon
+train_lightgbm_multi_horizon = train_xgboost_multi_horizon
