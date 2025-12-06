@@ -87,7 +87,7 @@ def load_indicator_data():
 
     engine = _get_engine()
     if engine:
-        df = pd.read_sql("SELECT * FROM econ_model", engine)
+        df = pd.read_sql("SELECT * FROM econ_models", engine)
 
         # Remove SP500 because we will load it separately
         df = df[df["series_id"] != "SP500"]
