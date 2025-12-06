@@ -13,11 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from internal.models.bizcycle.db_loader import (
-    load_indicator_data,
-    load_sp500_from_db,
-    synthesize_key_indicators,
-)
+from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
 from internal.models.bizcycle.preprocess import preprocess_weekly
 from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
@@ -67,31 +63,6 @@ def validate_key_indicator_coverage(df: pd.DataFrame):
         )
 
     print("\nKey macro indicators confirmed:", sorted(present))
-
-
-def backfill_missing_key_indicators(wide_df: pd.DataFrame, freq: str = "W-FRI") -> pd.DataFrame:
-    """Add synthetic key indicator columns when upstream data is incomplete."""
-
-    present = {col for col in wide_df.columns if col in KEY_INDICATORS}
-    missing = KEY_INDICATORS - present
-    if not missing:
-        return wide_df
-
-    synthetic_long = synthesize_key_indicators(freq=freq)
-    synthetic_long = synthetic_long[synthetic_long["name"].isin(missing)]
-
-    value_wide = to_wide_monthly(synthetic_long[["name", "value"]], freq=freq)
-    cat_wide = synthetic_long.pivot_table(
-        index=synthetic_long.index,
-        columns="name",
-        values="indicator_cat_code",
-        aggfunc="first",
-    ).add_suffix("_catcode")
-
-    wide_df = wide_df.join(value_wide, how="left")
-    wide_df = wide_df.join(cat_wide, how="left")
-
-    return wide_df
 
 # ---------------------------------------------
 # 1. Load indicator data
