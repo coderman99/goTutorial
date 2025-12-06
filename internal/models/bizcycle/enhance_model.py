@@ -25,30 +25,6 @@ except ImportError:  # pragma: no cover - fallback
 
     XGBClassifier = None
 
-# Explicitly list public helpers for callers that rely on star-imports.
-__all__ = [
-    "to_wide_monthly",
-    "KEY_INDICATORS",
-    "make_features",
-    "train_xgboost_multi_horizon",
-    "predict_and_explain",
-    "backfill_missing_key_indicators",
-]
-
-# Re-export preprocessing helpers for backward compatibility so callers that
-# still import from ``enhance_model`` continue to work after the recent
-# refactor. The wrapper keeps import-time failures from masking xgboost
-# availability errors.
-def backfill_missing_key_indicators(*args, **kwargs):
-    try:  # pragma: no cover - passthrough for legacy imports
-        from .preprocess import backfill_missing_key_indicators as _bf
-
-        return _bf(*args, **kwargs)
-    except Exception:
-        raise ImportError(
-            "backfill_missing_key_indicators is unavailable; ensure preprocess.py is present"
-        )
-
 
 # ---- Helper: wide conversion for long-format indicator data ----
 def to_wide_monthly(df_long, freq="M"):
@@ -350,9 +326,9 @@ def train_xgboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_xgboost(X, y)
+        pipeline = _fit_lightgbm(X, y)
 
-        model_path = os.path.join(model_dir, f"xgboost_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
