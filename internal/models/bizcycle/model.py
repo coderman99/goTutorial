@@ -1,11 +1,11 @@
 try:
-    from catboost import CatBoostClassifier
+    from lightgbm import LGBMClassifier
 
-    _CATBOOST_AVAILABLE = True
-except ImportError:  # pragma: no cover - fallback when catboost is unavailable
+    _LIGHTGBM_AVAILABLE = True
+except ImportError:  # pragma: no cover - fallback when lightgbm is unavailable
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _CATBOOST_AVAILABLE = False
+    _LIGHTGBM_AVAILABLE = False
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report
 import numpy as np
@@ -84,21 +84,19 @@ def train_model(df):
         X, y_encoded, test_size=0.2, shuffle=False
     )
 
-    if _CATBOOST_AVAILABLE:
-        model = CatBoostClassifier(
-            iterations=800,
-            depth=6,
+    if _LIGHTGBM_AVAILABLE:
+        model = LGBMClassifier(
+            n_estimators=800,
+            num_leaves=63,
             learning_rate=0.05,
-            loss_function="MultiClass",
-            eval_metric="TotalF1",
-            random_seed=42,
-            verbose=False,
+            objective="multiclass",
+            random_state=42,
         )
         model.fit(
             X_train,
             y_train,
             eval_set=[(X_test, y_test)],
-            use_best_model=True,
+            eval_metric="multi_logloss",
             verbose=False,
         )
     else:
@@ -142,14 +140,19 @@ def train_multi_horizon(df):
         X_train, X_test, y_train, y_test = train_test_split(
             X_valid, y_valid, test_size=0.2, shuffle=False
         )
-        if _CATBOOST_AVAILABLE:
-            model = CatBoostClassifier(
-                iterations=800,
-                depth=6,
+        if _LIGHTGBM_AVAILABLE:
+            model = LGBMClassifier(
+                n_estimators=800,
+                num_leaves=63,
                 learning_rate=0.05,
-                loss_function="MultiClass",
-                eval_metric="TotalF1",
-                random_seed=42,
+                objective="multiclass",
+                random_state=42,
+            )
+            model.fit(
+                X_train,
+                y_train,
+                eval_set=[(X_test, y_test)],
+                eval_metric="multi_logloss",
                 verbose=False,
             )
             model.fit(X_train, y_train, verbose=False)

@@ -1,20 +1,20 @@
 # enhance_model.py
 import joblib
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import accuracy_score
-from sklearn.feature_selection import mutual_info_classif
 import os
+import pandas as pd
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
 
 try:
-    from catboost import CatBoostClassifier
+    from lightgbm import LGBMClassifier
 
-    _CATBOOST_AVAILABLE = True
+    _LIGHTGBM_AVAILABLE = True
 except ImportError:  # pragma: no cover - lightweight fallback
     from sklearn.ensemble import GradientBoostingClassifier
 
-    _CATBOOST_AVAILABLE = False
+    _LIGHTGBM_AVAILABLE = False
 
 
 # ---- Helper: wide conversion if you still have long-format monthly data ----
@@ -173,8 +173,8 @@ def _split_for_early_stopping(X_df, y_series, val_fraction=0.2):
     return X_train, y_train, X_val, y_val
 
 
-def _fit_catboost(X, y):
-    """Fit a CatBoost classifier with time-aware validation for early stopping."""
+def _fit_lightgbm(X, y):
+    """Fit a LightGBM classifier with time-aware validation for early stopping."""
 
     X_filled = X.ffill().bfill()
 
@@ -190,15 +190,13 @@ def _fit_catboost(X, y):
         X_selected, pd.Series(y_encoded), val_fraction=0.2
     )
 
-    if _CATBOOST_AVAILABLE:
-        model = CatBoostClassifier(
-            iterations=800,
+    if _LIGHTGBM_AVAILABLE:
+        model = LGBMClassifier(
+            n_estimators=800,
+            num_leaves=63,
             learning_rate=0.05,
-            depth=6,
-            loss_function="MultiClass",
-            eval_metric="TotalF1",
-            random_seed=42,
-            verbose=False,
+            objective="multiclass",
+            random_state=42,
         )
 
         if X_val is not None and y_val is not None:
@@ -206,12 +204,12 @@ def _fit_catboost(X, y):
                 X_train,
                 y_train,
                 eval_set=[(X_val, y_val)],
-                use_best_model=True,
+                eval_metric="multi_logloss",
                 verbose=False,
             )
         else:
             model.fit(X_selected, y_encoded, verbose=False)
-    else:  # pragma: no cover - fallback for environments without catboost
+    else:  # pragma: no cover - fallback for environments without lightgbm
         model = GradientBoostingClassifier(random_state=42)
         model.fit(X_selected, y_encoded)
 
@@ -225,7 +223,7 @@ def _fit_catboost(X, y):
         "feature_scores": feature_scores.to_dict(),
         "train_accuracy": float(train_accuracy),
     }
-def train_catboost_multi_horizon(
+def train_lightgbm_multi_horizon(
     df_features,
     df_targets,
     horizons=['cycle_1m', 'cycle_3m', 'cycle_6m'],
@@ -250,9 +248,9 @@ def train_catboost_multi_horizon(
             accuracies[h] = None
             continue
 
-        pipeline = _fit_catboost(X, y)
+        pipeline = _fit_lightgbm(X, y)
 
-        model_path = os.path.join(model_dir, f"catboost_pipeline_{h}.joblib")
+        model_path = os.path.join(model_dir, f"lightgbm_pipeline_{h}.joblib")
         joblib.dump(pipeline, model_path)
         pipelines[h] = pipeline
         accuracies[h] = pipeline["train_accuracy"]
@@ -383,5 +381,5 @@ def predict_and_explain(pipelines, X_all, top_n=10, explainers=None, as_of=None)
 
 
 # Backwards-compatible aliases for callers expecting earlier names
-train_lightgbm_multi_horizon = train_catboost_multi_horizon
-train_xgboost_multi_horizon = train_catboost_multi_horizon
+train_catboost_multi_horizon = train_lightgbm_multi_horizon
+train_xgboost_multi_horizon = train_lightgbm_multi_horizon
