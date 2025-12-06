@@ -35,6 +35,18 @@ env_path = Path(__file__).resolve().parents[3] / "internal" / ".env"
 if load_dotenv and env_path.exists():
     load_dotenv(env_path)
 
+# Resolve preprocessing helpers with a clear failure message if imports drift.
+preprocess_weekly = preprocess_mod.preprocess_weekly
+backfill_missing_key_indicators = getattr(
+    preprocess_mod, "backfill_missing_key_indicators", None
+)
+
+if backfill_missing_key_indicators is None:
+    raise ImportError(
+        "backfill_missing_key_indicators was not found in preprocess.py; "
+        "ensure your environment uses the updated bizcycle package."
+    )
+
 
 def drop_constant_columns(df: pd.DataFrame):
     """Remove columns that carry no signal before model training."""
