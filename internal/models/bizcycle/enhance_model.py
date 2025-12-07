@@ -31,6 +31,30 @@ except ImportError:  # pragma: no cover - fallback
 
 
 # ---- Helper: wide conversion for long-format indicator data ----
+def _ensure_unique_sorted_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a copy of ``df`` with a unique, sorted index.
+
+    When upstream joins accidentally introduce duplicate timestamps or
+    MultiIndex rows, many pandas operations (for example ``reindex``) will
+    raise a ``ValueError``.  This helper collapses duplicates deterministically
+    using the last observed row so downstream feature engineering remains
+    stable.
+    """
+
+    df = df.copy()
+
+    if df.index.is_unique:
+        return df.sort_index()
+
+    if isinstance(df.index, pd.MultiIndex):
+        # Preserve the most recent observation for each MultiIndex key
+        df = df.groupby(level=list(range(df.index.nlevels))).last()
+    else:
+        df = df[~df.index.duplicated(keep="last")]
+
+    return df.sort_index()
+
+
 def to_wide_monthly(df_long, freq="M"):
     """
     Convert long-format indicators into a wide table without dropping duplicate
@@ -44,7 +68,8 @@ def to_wide_monthly(df_long, freq="M"):
 
     # Already wide (no 'name' column)
     if "name" not in df.columns:
-        return df
+        # Normalize the index the same way as the pivoted path: unique, sorted, ffilled
+        return _ensure_unique_sorted_index(df).ffill()
 
     # Ensure timestamp exists only as a column to avoid index/column ambiguity.
     has_timestamp_column = "timestamp" in df.columns
@@ -76,7 +101,7 @@ def to_wide_monthly(df_long, freq="M"):
         aggfunc="mean",
     )
 
-    wide = wide.sort_index().ffill()
+    wide = _ensure_unique_sorted_index(wide).ffill()
     return wide
 
 
@@ -89,8 +114,7 @@ def make_features(wide, base_lags=(1, 3)):
     - Remove stock-market return features to avoid leakage from SP500 labels.
     - Limit lagged indicators to trim the engineered feature count.
     """
-    wide = wide.copy()
-    wide = wide.loc[~wide.index.duplicated()].sort_index()
+    wide = _ensure_unique_sorted_index(wide)
 
     # Keep only numeric columns that are not targets/composite scores
     numeric_cols = [
@@ -112,7 +136,7 @@ def make_features(wide, base_lags=(1, 3)):
     roc_suffixes = tuple(f"roc{w}" for w in roc_windows)
     roc_frames = []
     for window in roc_windows:
-        roc = X.pct_change(periods=window)
+        roc = X.pct_change(periods=window, fill_method=None)
         roc.columns = [f"{c}_roc{window}" for c in X.columns]
         roc_frames.append(roc)
 
