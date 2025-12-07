@@ -12,9 +12,8 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import create_engine
 
-from .config import DATABASE_URL
-from .indicator_definitions import KEY_INDICATORS
-
+from config import DATABASE_URL
+from indicator_definitions import KEY_INDICATORS
 
 def _get_engine():
     if not DATABASE_URL:
