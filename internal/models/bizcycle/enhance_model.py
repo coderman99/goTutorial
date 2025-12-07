@@ -44,53 +44,6 @@ def _ensure_unique_sorted_index(df):
 
 
 
-def build_category_composites(long_df: pd.DataFrame) -> pd.DataFrame | None:
-    """Average indicator values by category on each timestamp.
-
-    Handles MultiIndex inputs (``timestamp``/``series_id``) by flattening them
-    first, and guards against the ``len(index) != len(labels)`` error that
-    occurs when the grouping keys are misaligned with the frame being grouped.
-    """
-
-    if "indicator_cat" not in long_df.columns or "value" not in long_df.columns:
-        return None
-
-    df = long_df.copy()
-
-    # Normalize the timestamp column
-    if isinstance(df.index, pd.MultiIndex):
-        df = df.reset_index()
-    elif df.index.name is not None:
-        df = df.reset_index()
-
-    if "timestamp" not in df.columns:
-        df["timestamp"] = df.index
-
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-    # Keep only the fields needed for grouping
-    df = df.dropna(subset=["timestamp", "indicator_cat", "value"])
-
-    composites = {}
-    for category, col_name in CATEGORY_MAP.items():
-        cat_df = df[df["indicator_cat"] == category]
-        if cat_df.empty:
-            continue
-
-        grouped = cat_df.groupby("timestamp")["value"].mean()
-        composites[col_name] = grouped
-
-    if not composites:
-        return None
-
-    comp_df = pd.DataFrame(composites)
-    return _ensure_unique_sorted_index(comp_df)
-
-
-
-
-
-
 # ------------------------------------------------------------
 # VOLATILITY MEASURES
 # ------------------------------------------------------------
@@ -148,43 +101,51 @@ def add_category_volatility(comp_df, windows=(6, 12)):
 # ------------------------------------------------------------
 # MAIN FEATURE MATRIX CREATOR
 # ------------------------------------------------------------
-def build_category_composites(long_df):
+def build_category_composites(long_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Average indicator values by category on each timestamp.
+
+    This version keeps the index and grouping keys aligned to avoid the
+    ``len(index) != len(labels)`` error that occurs when mixing MultiIndex and
+    plain indexes. It mirrors the helper defined near the top of the module but
+    lives here to avoid being shadowed by a second definition.
     """
-    Build composited category signals like leading_comp, lagging_comp, etc.
-    Handles missing categories safely.
-    """
-    if "indicator_cat" not in long_df.columns:
+
+    if "indicator_cat" not in long_df.columns or "value" not in long_df.columns:
         print("[Composite] No indicator_cat column found. Skipping composites.")
-        return pd.DataFrame(index=long_df.index)
+        return None
 
-    categories = long_df["indicator_cat"].dropna().unique()
-    categories = [cat for cat in categories if isinstance(cat, str)]
+    df = long_df.copy()
 
-    if len(categories) == 0:
-        print("[Composite] No valid categories present.")
-        return pd.DataFrame(index=long_df.index)
+    # Normalize the timestamp column
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index()
+    elif df.index.name is not None:
+        df = df.reset_index()
+
+    if "timestamp" not in df.columns:
+        df["timestamp"] = df.index
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+    # Keep only the fields needed for grouping
+    df = df.dropna(subset=["timestamp", "indicator_cat", "value"])
 
     composites = {}
-
-    for cat in categories:
-        mask = long_df["indicator_cat"] == cat
-        cat_df = long_df.loc[mask, ["value"]].copy()
-
+    for category, col_name in CATEGORY_MAP.items():
+        cat_df = df[df["indicator_cat"] == category]
         if cat_df.empty:
             continue
 
-        grouped = cat_df.groupby(long_df.index).mean()["value"]
-        composites[f"{cat.lower()}_comp"] = grouped
+        grouped = cat_df.groupby("timestamp")["value"].mean()
+        composites[col_name] = grouped
 
     if not composites:
-        return pd.DataFrame(index=long_df.index)
+        print("[Composite] No valid categories present.")
+        return None
 
     comp_df = pd.DataFrame(composites)
-    comp_df = comp_df.reindex(long_df.index).sort_index()
-
     print(f"[Composite] Built composites: {list(comp_df.columns)}")
-
-    return comp_df
+    return _ensure_unique_sorted_index(comp_df)
 
 def make_features(long_df, wide_df):
     """
