@@ -192,3 +192,10 @@ def load_sp500_from_db():
     spx = pd.concat(sources).sort_index()
     spx = spx[~spx.index.duplicated(keep="first")]
     return spx[["sp500"]]
+
+
+# Backwards compatibility: older scripts and tests still import
+# ``load_sp500_data``. Keep it as a thin wrapper around the modern helper so
+# those entrypoints continue to run without modification.
+def load_sp500_data():
+    return load_sp500_from_db()
