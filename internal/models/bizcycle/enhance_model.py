@@ -26,28 +26,22 @@ except ImportError:  # pragma: no cover - fallback
     XGBClassifier = None
 
 
-def _ensure_unique_sorted_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Return a copy of ``df`` with a unique, sorted index.
-
-    When upstream joins accidentally introduce duplicate timestamps or
-    MultiIndex rows, many pandas operations (for example ``reindex``) will
-    raise a ``ValueError``.  This helper collapses duplicates deterministically
-    using the last observed row so downstream feature engineering remains
-    stable.
+# ---- Helper: wide conversion for long-format indicator data ----
+def _ensure_unique_sorted_index(df):
     """
-
+    Ensures datetime index is unique, sorted, and valid.
+    """
     df = df.copy()
 
-    if df.index.is_unique:
-        return df.sort_index()
+    df.index = pd.to_datetime(df.index, errors="coerce")
 
-    if isinstance(df.index, pd.MultiIndex):
-        # Preserve the most recent observation for each MultiIndex key
-        df = df.groupby(level=list(range(df.index.nlevels))).last()
-    else:
-        df = df[~df.index.duplicated(keep="last")]
+    df = df[~df.index.isna()]
+    df = df[~df.index.duplicated(keep="last")]
 
-    return df.sort_index()
+    df = df.sort_index()
+
+    return df
+
 
 
 def build_category_composites(long_df: pd.DataFrame) -> pd.DataFrame | None:
@@ -100,18 +94,7 @@ def build_category_composites(long_df: pd.DataFrame) -> pd.DataFrame | None:
 # ------------------------------------------------------------
 # VOLATILITY MEASURES
 # ------------------------------------------------------------
-def add_category_volatility(comp_df):
-    df = comp_df.copy()
-    windows = [6, 12]
 
-    for col in comp_df.columns:
-        for win in windows:
-            df[f"vol_{col}_win{win}"] = comp_df[col].rolling(win).std()
-
-    # ensure no index drift
-    df = df.reindex(df.index.unique().sort_values())
-
-    return df
 
 
 
@@ -146,94 +129,154 @@ def drop_constant_columns(df: pd.DataFrame):
     const_cols = nunique[nunique <= 1].index.tolist()
     df = df.drop(columns=const_cols, errors="ignore")
     return df, const_cols
+def add_category_volatility(comp_df, windows=(6, 12)):
+    """
+    Adds rolling volatility (std deviation) for each composite category.
+    """
+    if comp_df.empty:
+        return comp_df
+
+    comp_df = comp_df.copy()
+
+    for col in comp_df.columns:
+        for win in windows:
+            comp_df[f"vol_{col}_win{win}"] = comp_df[col].rolling(win).std()
+
+    return comp_df
 
 
 # ------------------------------------------------------------
 # MAIN FEATURE MATRIX CREATOR
 # ------------------------------------------------------------
+def build_category_composites(long_df):
+    """
+    Build composited category signals like leading_comp, lagging_comp, etc.
+    Handles missing categories safely.
+    """
+    if "indicator_cat" not in long_df.columns:
+        print("[Composite] No indicator_cat column found. Skipping composites.")
+        return pd.DataFrame(index=long_df.index)
+
+    categories = long_df["indicator_cat"].dropna().unique()
+    categories = [cat for cat in categories if isinstance(cat, str)]
+
+    if len(categories) == 0:
+        print("[Composite] No valid categories present.")
+        return pd.DataFrame(index=long_df.index)
+
+    composites = {}
+
+    for cat in categories:
+        mask = long_df["indicator_cat"] == cat
+        cat_df = long_df.loc[mask, ["value"]].copy()
+
+        if cat_df.empty:
+            continue
+
+        grouped = cat_df.groupby(long_df.index).mean()["value"]
+        composites[f"{cat.lower()}_comp"] = grouped
+
+    if not composites:
+        return pd.DataFrame(index=long_df.index)
+
+    comp_df = pd.DataFrame(composites)
+    comp_df = comp_df.reindex(long_df.index).sort_index()
+
+    print(f"[Composite] Built composites: {list(comp_df.columns)}")
+
+    return comp_df
 
 def make_features(long_df, wide_df):
     """
     Build the combined feature matrix.
     Fully index-aligned, composite-safe and volatility-safe.
     """
-    wide_df = _ensure_unique_sorted_index(wide_df) if wide_df is not None else None
 
     # --------------------------
-    # STEP 1 — Base features
+    # STEP 0 — Normalize wide_df index
     # --------------------------
+    if wide_df is not None and not wide_df.empty:
+        wide_df = _ensure_unique_sorted_index(wide_df)
+
+    # --------------------------
+    # STEP 1 — Base indicator-level features
+    # --------------------------
+    print("[Stage] Building base feature matrix...")
+
     X = long_df[["value"]].copy()
-    X = X.sort_index()
+    X = _ensure_unique_sorted_index(X)
 
-    # Ensure consistent index name
+    # Ensure timestamp index name exists
     if X.index.name is None:
         X.index.name = "timestamp"
 
-    # Rate-of-change (ROC) features capture short-term momentum in each indicator
-    roc_windows = (1, 3, 6)
-    roc_suffixes = tuple(f"roc{w}" for w in roc_windows)
-    roc_frames = []
-    for window in roc_windows:
-        roc = X.pct_change(periods=window, fill_method=None)
-        roc.columns = [f"{c}_roc{window}" for c in X.columns]
-        roc_frames.append(roc)
+    # Add simple lags
+    X["value_lag1"] = X["value"].shift(1)
+    X["value_lag3"] = X["value"].shift(3)
 
-    # Add rate of change (ROC)
-    for win in [1, 3, 6]:
-        X[f"value_roc{win}"] = X["value"].pct_change(win)
+    # Add rate-of-change (momentum) features
+    for win in (1, 3, 6):
+        X[f"value_roc{win}"] = X["value"].pct_change(periods=win, fill_method=None)
 
     print(f"[Info] Base feature columns: {list(X.columns)}")
 
     # --------------------------
-    # STEP 2 — Build composites
+    # STEP 2 — Build category composites
     # --------------------------
     print("[Stage] Computing category composites...")
     comp = build_category_composites(long_df)
 
     if comp is None or comp.empty:
         print("[Warning] No composites created. Continuing without category features.")
+
     else:
         print(f"[Success] Composite columns created: {list(comp.columns)}")
 
-        # Ensure composite index matches feature index
+        # Fix composite index
         comp.index = pd.to_datetime(comp.index)
-        comp = comp.reindex(X.index)  # align 1:1 with X
+        comp = _ensure_unique_sorted_index(comp)
+
+        # Align to X
+        comp = comp.reindex(X.index)
 
         # --------------------------
-        # STEP 3 — Add volatility
+        # STEP 3 — Add volatility measures
         # --------------------------
         comp = add_category_volatility(comp)
 
-        # Ensure again that indexes align
+        # Align again after new cols added
         comp.index = comp.index.rename(X.index.name)
         comp = comp.reindex(X.index)
 
         print(f"[Success] After volatility, columns: {list(comp.columns)}")
 
-        # --------------------------
-        # JOIN COMPOSITES WITH X
-        # --------------------------
+        # Join composite features
         X = X.join(comp, how="left")
 
     # --------------------------
-    # STEP 4 — Add wide monthly dataframe (SP500 etc)
+    # STEP 4 — Add wide monthly macro features (SP500 etc.)
     # --------------------------
     if wide_df is not None and not wide_df.empty:
+
         wide_df.index = pd.to_datetime(wide_df.index)
         wide_df.index = wide_df.index.rename(X.index.name)
-        wide_df = wide_df.reindex(X.index)
+
+        # Align monthly data to weekly indicator timestamps
+        wide_df = wide_df.reindex(X.index, method="ffill")
 
         print(f"[Stage] Joining wide monthly features: {wide_df.columns.tolist()}")
+
         X = X.join(wide_df, how="left")
 
     # --------------------------
-    # STEP 5 — Cleanup
+    # STEP 5 — Cleanup & Imputation
     # --------------------------
     X = X.replace([np.inf, -np.inf], np.nan)
     X = X.fillna(method="ffill").fillna(method="bfill")
 
     print(f"[Success] Final feature matrix shape: {X.shape}")
     return X
+
 
 
 
