@@ -44,37 +44,47 @@ def _ensure_unique_sorted_index(df):
 
 
 
-def to_wide_monthly(df_long, freq="M"):
-    """
-    Build category-level composite indicators.
-    Safe against multi-index issues.
+def build_category_composites(long_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Average indicator values by category on each timestamp.
+
+    Handles MultiIndex inputs (``timestamp``/``series_id``) by flattening them
+    first, and guards against the ``len(index) != len(labels)`` error that
+    occurs when the grouping keys are misaligned with the frame being grouped.
     """
 
-    if "indicator_cat" not in long_df.columns:
-        print("[Composite] No indicator_cat column found — skipping composites.")
+    if "indicator_cat" not in long_df.columns or "value" not in long_df.columns:
         return None
 
-    comps = {}
-    long_df = long_df.copy()
+    df = long_df.copy()
 
-    # Ensure index is a clean timestamp index
-    if isinstance(long_df.index, pd.MultiIndex):
-        # Take only the timestamp level
-        long_df.index = long_df.index.get_level_values(0)
+    # Normalize the timestamp column
+    if isinstance(df.index, pd.MultiIndex):
+        df = df.reset_index()
+    elif df.index.name is not None:
+        df = df.reset_index()
 
-    long_df.index = pd.to_datetime(long_df.index)
-    long_df.index.name = "timestamp"
+    if "timestamp" not in df.columns:
+        df["timestamp"] = df.index
 
-    categories = long_df["indicator_cat"].dropna().unique()
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-    for cat in categories:
-        subset = long_df[long_df["indicator_cat"] == cat]
+    # Keep only the fields needed for grouping
+    df = df.dropna(subset=["timestamp", "indicator_cat", "value"])
 
-        if subset.empty:
+    composites = {}
+    for category, col_name in CATEGORY_MAP.items():
+        cat_df = df[df["indicator_cat"] == category]
+        if cat_df.empty:
             continue
 
-    wide = _ensure_unique_sorted_index(wide).ffill()
-    return wide
+        grouped = cat_df.groupby("timestamp")["value"].mean()
+        composites[col_name] = grouped
+
+    if not composites:
+        return None
+
+    comp_df = pd.DataFrame(composites)
+    return _ensure_unique_sorted_index(comp_df)
 
 
 
