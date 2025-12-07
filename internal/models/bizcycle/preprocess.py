@@ -38,13 +38,12 @@ def _canonicalize_indicator_name(name: str) -> str:
 def backfill_missing_key_indicators(df: pd.DataFrame, freq: str = "W-FRI") -> pd.DataFrame:
     """Ensure the wide feature table always includes every economic indicator.
 
-    The database contains ~30+ macro/market series defined alongside the Go
-    structs. When some series have sparse history, we still want the model to
-    see a stable column set so lagged features and composite scores align
-    correctly. This helper adds missing indicator columns (filled with NA) and
-    reindexes to the requested frequency to keep weekly alignment.
+    The database contains macro/market series defined alongside the Go structs.
+    When some series have sparse history, we still want the model to see a stable
+    column set so lagged features and composite scores align correctly. This
+    helper adds missing indicator columns (filled with NA) and reindexes to the
+    requested frequency to keep weekly alignment.
     """
-
     wide = df.copy()
     wide = wide.loc[~wide.index.duplicated()].sort_index()
 
@@ -65,24 +64,22 @@ def backfill_missing_key_indicators(df: pd.DataFrame, freq: str = "W-FRI") -> pd
 
     return wide
 
+
 def preprocess_monthly(df):
     """
     Convert raw indicator rows into end-of-month monthly data.
     Preserves indicator 'name' so wide pivoting works.
     """
-
     return _resample_indicators(df, freq="ME")
 
 
 def preprocess_weekly(df):
     """Convert raw indicator rows into end-of-week (Friday) data."""
-
     return _resample_indicators(df, freq="W-FRI")
 
 
 def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
     """Shared resampling helper for monthly or weekly aggregation."""
-
     df = df.copy()
 
     # If callers provided a timestamp index *and* a timestamp column, drop the
@@ -91,8 +88,7 @@ def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
     if "timestamp" in df.index.names:
         df = df.reset_index(drop=True)
 
-    # Drop exact duplicate rows (common when appending new history) so they
-    # are not double-counted during aggregation.
+    # Drop exact duplicate rows so they are not double-counted during aggregation.
     df = df.drop_duplicates()
 
     # ensure tz-naive
@@ -103,7 +99,7 @@ def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
     df["name"] = df["name"].apply(_canonicalize_indicator_name)
 
     # Sort before resampling to make "last" deterministic when multiple points
-    # land in the same bucket (e.g., daily SP500 history vs. legacy monthly rows).
+    # land in the same bucket (daily history vs. legacy monthly rows).
     sort_cols = [c for c in ["name", "timestamp", "id"] if c in df.columns]
     df = df.sort_values(sort_cols, na_position="last")
 
@@ -125,13 +121,10 @@ def _resample_indicators(df: pd.DataFrame, freq: str) -> pd.DataFrame:
         "Leading": 1,
         "Lagging": 2,
         "Coincident": 3,
-        "Coincidental": 3
+        "Coincidental": 3,
     }
     aggregated["indicator_cat_code"] = (
-        aggregated["indicator_cat"]
-        .map(category_map)
-        .fillna(0)
-        .astype(int)
+        aggregated["indicator_cat"].map(category_map).fillna(0).astype(int)
     )
 
     aggregated = aggregated.set_index("timestamp")

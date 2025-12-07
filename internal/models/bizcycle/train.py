@@ -1,40 +1,62 @@
-import os
-from pathlib import Path
+# ============================================================
+#  train.py — Updated for reliable imports and Option B schema
+# ============================================================
+
 import sys
+from pathlib import Path
 
-import pandas as pd
-try:
-    from dotenv import load_dotenv
-except ImportError:  # pragma: no cover - optional dependency
-    load_dotenv = None
-from sqlalchemy import create_engine
-
+# ------------------------------------------------------------
+# Ensure project root is in sys.path BEFORE ANY IMPORTS
+# ------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.append(str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))
 
+# ------------------------------------------------------------
+# Standard library imports
+# ------------------------------------------------------------
+import os
+import json
+import pandas as pd
+from sqlalchemy import create_engine
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    load_dotenv = None
+
+# ------------------------------------------------------------
+# BizCycle module imports (safe now that sys.path is fixed)
+# ------------------------------------------------------------
 from internal.models.bizcycle import preprocess as preprocess_mod
 from internal.models.bizcycle.db_loader import load_indicator_data, load_sp500_from_db
 from internal.models.bizcycle.labelling import label_business_cycle
 from internal.models.bizcycle.model import create_future_targets
 from internal.models.bizcycle.composite_score import compute_composite_score
 from internal.models.bizcycle.enhance_model import (
-    KEY_INDICATORS,
     to_wide_monthly,
     make_features,
     train_xgboost_multi_horizon,
     predict_and_explain,
 )
-from internal.models.bizcycle.config import get_database_url
 
-# ---------------------------------------------
-# Load .env
-# ---------------------------------------------
-env_path = Path(__file__).resolve().parents[3] / "internal" / ".env"
+from internal.models.bizcycle.config import (
+    get_database_url,
+    KEY_INDICATORS,
+)
+
+
+# ------------------------------------------------------------
+# Load .env from internal/.env
+# ------------------------------------------------------------
+env_path = PROJECT_ROOT / "internal" / ".env"
 if load_dotenv and env_path.exists():
     load_dotenv(env_path)
 
-# Resolve preprocessing helpers with a clear failure message if imports drift.
+
+# ------------------------------------------------------------
+# Preprocessing helpers
+# ------------------------------------------------------------
 preprocess_weekly = preprocess_mod.preprocess_weekly
 backfill_missing_key_indicators = getattr(
     preprocess_mod, "backfill_missing_key_indicators", None
@@ -42,14 +64,15 @@ backfill_missing_key_indicators = getattr(
 
 if backfill_missing_key_indicators is None:
     raise ImportError(
-        "backfill_missing_key_indicators was not found in preprocess.py; "
-        "ensure your environment uses the updated bizcycle package."
+        "preprocess.py is missing backfill_missing_key_indicators(), "
+        "required for Option B indicator padding."
     )
 
 
+# ------------------------------------------------------------
+# Helper: drop columns with no variance
+# ------------------------------------------------------------
 def drop_constant_columns(df: pd.DataFrame):
-    """Remove columns that carry no signal before model training."""
-
     nunique = df.nunique(dropna=False)
     constant_cols = nunique[nunique <= 1].index.tolist()
     if constant_cols:
@@ -57,56 +80,52 @@ def drop_constant_columns(df: pd.DataFrame):
     return df, constant_cols
 
 
+# ------------------------------------------------------------
+# Helper: ensure all key indicators appear in wide DataFrame
+# ------------------------------------------------------------
 def validate_key_indicator_coverage(df: pd.DataFrame):
-    """Ensure all critical macro indicators are present before training."""
+    present = set(c for c in df.columns)
+    missing = sorted([k for k in KEY_INDICATORS if k not in present])
 
-    present = set()
-    for col in df.columns:
-        for key in KEY_INDICATORS:
-            if col.startswith(key):
-                present.add(key)
-
-    missing = sorted(KEY_INDICATORS - present)
     if missing:
         raise ValueError(
-            "Missing key macro indicators. Expected all of these columns to be present: "
-            f"{sorted(KEY_INDICATORS)}. Missing: {missing}. "
-            "Verify your indicator ingestion/merging pipeline so these series reach the wide feature set."
+            f"Missing key macro indicators. Expected: {sorted(KEY_INDICATORS)}.\n"
+            f"Missing: {missing}\n"
+            f"Check indicator loading & preprocessing."
         )
+    print("\nKey macro indicators confirmed:", sorted(KEY_INDICATORS))
 
-    print("\nKey macro indicators confirmed:", sorted(present))
 
-# ---------------------------------------------
-# 1. Load indicator data
-# ---------------------------------------------
-# Default to 2005 to keep a reasonably modern sample; allow callers to override
-# via environment variable when a different cutoff is desired.
-EARLIEST_DATE = os.getenv("BIZCYCLE_EARLIEST_DATE")
-EARLIEST_DATE = pd.to_datetime(EARLIEST_DATE) if EARLIEST_DATE else pd.Timestamp("2005-01-01")
-
+# ============================================================
+# 1. LOAD RAW INDICATOR DATA
+# ============================================================
 df = load_indicator_data()
 print(f"Loaded indicator rows: {len(df):,}")
 print(df.head())
 
-# ---------------------------------------------
-# 2. Convert indicators → End-of-week frequency
-# ---------------------------------------------
+EARLIEST_DATE = os.getenv("BIZCYCLE_EARLIEST_DATE")
+EARLIEST_DATE = pd.to_datetime(EARLIEST_DATE) if EARLIEST_DATE else pd.Timestamp("2005-01-01")
+
+
+# ============================================================
+# 2. PREPROCESS → WEEKLY FREQUENCY
+# ============================================================
 weekly = preprocess_weekly(df)
 print(f"\nWeekly Preprocessed ({len(weekly):,} rows)")
 print(weekly.head())
 
-# ---------------------------------------------
-# 3. Load SP500 from database (or fallback CSV)
-# ---------------------------------------------
-db_url = get_database_url()
-engine = create_engine(db_url) if db_url else None
+
+# ============================================================
+# 3. LOAD S&P 500 SERIES
+# ============================================================
 sp500 = load_sp500_from_db()
 print("\nSP500 Raw:")
 print(sp500.head())
 
-# ---------------------------------------------
-# 4. Label business cycle phases (labels are upsampled to weekly)
-# ---------------------------------------------
+
+# ============================================================
+# 4. LABEL BUSINESS CYCLES
+# ============================================================
 labeled_df = label_business_cycle(weekly, sp500, target_freq="W-FRI")
 labeled_df = labeled_df[~labeled_df.index.duplicated(keep="last")]
 
@@ -116,22 +135,22 @@ if EARLIEST_DATE is not None:
 print(f"\nBusiness Cycle Labeled ({len(labeled_df):,} rows)")
 print(labeled_df.head())
 
-# ---------------------------------------------
-# 5. Create future prediction targets (approx 1m, 3m, 6m in weeks)
-# ---------------------------------------------
+
+# ============================================================
+# 5. CREATE FUTURE TARGET LABELS
+# ============================================================
 labeled_df = create_future_targets(labeled_df, freq="W-FRI")
 print("\nFuture Targets Created")
 print(labeled_df.head())
 
-# ---------------------------------------------
-# 6. Compute Composite Scores for each horizon
-# ---------------------------------------------
-# Remove stock/return-derived columns before computing composite scores to ensure
-# the weights only reflect macro indicators and to avoid leakage from S&P 500 returns.
+
+# ============================================================
+# 6. REMOVE RETURN LEAKAGE & COMPUTE COMPOSITE SCORES
+# ============================================================
 return_cols = [c for c in labeled_df.columns if "return" in c.lower()]
 if return_cols:
     labeled_df = labeled_df.drop(columns=return_cols)
-    print("Dropped return-derived columns before composite scoring:", return_cols)
+    print("Dropped return-derived columns:", return_cols)
 
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
     labeled_df, weights = compute_composite_score(labeled_df, horizon)
@@ -141,112 +160,102 @@ for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
 print("\nComposite scores added to labeled_df!")
 print(labeled_df.head())
 
-# ---------------------------------------------
-# 7. Convert into WIDE format for ML
-# ---------------------------------------------
-# Build a single row per week for indicator values and metadata
-indicator_value_wide = to_wide_monthly(labeled_df[["name", "value"]], freq="W-FRI")
-indicator_cat_wide = labeled_df.pivot_table(
-    index=labeled_df.index,
-    columns="name",
-    values="indicator_cat_code",
-    aggfunc="first",
-).add_suffix("_catcode")
+
+# ============================================================
+# 7. BUILD WIDE DATAFRAME FOR ML
+# ============================================================
+indicator_value_wide = to_wide_monthly(labeled_df[["series_id", "value"]], freq="W-FRI")
 
 metadata_cols = [
     c for c in labeled_df.columns
     if c not in {"name", "value", "indicator_cat", "indicator_cat_code", "id"}
 ]
+
 metadata = labeled_df[metadata_cols].groupby(labeled_df.index).first()
 
-# Outer joins keep months even when some indicators are missing so we don't
-# silently discard history because of sparse series.
+# ------------------------------------------------------------
+# FIX overlapping metadata → wide indicator columns
+# ------------------------------------------------------------
+overlap_cols = set(metadata.columns).intersection(indicator_value_wide.columns)
+if overlap_cols:
+    print(f"Removing overlapping columns before join: {overlap_cols}")
+    metadata = metadata.drop(columns=list(overlap_cols))
+
 wide_df = metadata.join(indicator_value_wide, how="outer")
-wide_df = wide_df.join(indicator_cat_wide, how="left")
 wide_df = wide_df.loc[~wide_df.index.duplicated()].sort_index()
 
-if EARLIEST_DATE is not None:
-    wide_df = wide_df[wide_df.index >= EARLIEST_DATE]
-
-# If upstream data is sparse, synthesize missing key indicators so model training
-# always sees the required macro mix instead of failing coverage validation.
+# pad missing indicators
 wide_df = backfill_missing_key_indicators(wide_df, freq="W-FRI")
 
-# 8. Compute composite scores for each horizon using the wide feature set
+# add composite scores again
 for horizon in ["cycle_1m", "cycle_3m", "cycle_6m"]:
-    wide_df, weights = compute_composite_score(wide_df, horizon)
-    print(f"\n=== Composite Indicator Weights for {horizon} ===")
-    print(weights.sort_values(ascending=False).head(15))
+    wide_df, _ = compute_composite_score(wide_df, horizon)
 
 print("\nComposite scores added to wide_df!")
 print(wide_df.head())
 
-# 9. Build model-ready features (drop target columns and composite scores to avoid leakage)
+
+# ============================================================
+# 8. PREPARE ML FEATURES
+# ============================================================
 composite_cols = [c for c in wide_df.columns if c.startswith("composite_cycle_")]
 feature_df = wide_df.drop(columns=["cycle_1m", "cycle_3m", "cycle_6m", *composite_cols])
-# Strip any stock-market return-derived columns before feature engineering and
-# double-check that no S&P 500 return features leak into the same row as the target.
 feature_df = feature_df[[c for c in feature_df.columns if "return" not in c.lower()]]
 
 print("\nBase feature columns prior to lagging (count={}):".format(len(feature_df.columns)))
 print(sorted(feature_df.columns))
 
+# validate presence of required indicators
+# (may be disabled temporarily during debugging)
 validate_key_indicator_coverage(feature_df)
+
+# feature engineering
 X = make_features(feature_df)
 X = X.loc[~X.index.duplicated()].sort_index()
-print(
-    f"\nFeature rows after engineering: {len(X):,} "
-    f"(from labeled rows: {len(labeled_df):,})"
-)
-print("Engineered feature columns (count={}):".format(len(X.columns)))
-print(sorted(X.columns))
 
-# Remove constant columns that provide no predictive signal
+print(f"\nFeature rows after engineering: {len(X):,}")
+print("Engineered feature columns:", len(X.columns))
+
 X, constant_cols = drop_constant_columns(X)
 if constant_cols:
-    print(f"Dropped constant columns: {constant_cols}")
+    print("Dropped constant columns:", constant_cols)
 
-# 10. Build targets aligned with X
+
+# ============================================================
+# 9. ALIGN TARGETS
+# ============================================================
 df_targets = wide_df[["cycle_1m", "cycle_3m", "cycle_6m"]].reindex(X.index)
-available_targets = df_targets.dropna(how="all").shape[0]
-print(
-    f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
-)
 
-# Trim rows where all horizons are missing to keep features/labels in sync.
 valid_idx = df_targets.dropna(how="all").index
 X = X.loc[valid_idx]
 df_targets = df_targets.loc[valid_idx]
 
-available_targets = df_targets.shape[0]
 print(
-    f"Target rows aligned with features: {available_targets:,}/{len(df_targets):,}"
+    f"Target rows aligned with features: {df_targets.shape[0]:,}/{len(df_targets):,}"
 )
 
-# 11. Train multi-horizon models with XGBoost classifiers
+
+# ============================================================
+# 10. TRAIN XGBOOST MODELS
+# ============================================================
 pipelines, accuracies = train_xgboost_multi_horizon(X, df_targets)
 
 print("\nTraining accuracy by horizon:")
-for horizon, acc in accuracies.items():
-    if acc is None:
-        print(f"  {horizon}: no labels available")
-    else:
-        print(f"  {horizon}: {acc:.3f}")
+for h, acc in accuracies.items():
+    print(f"  {h}: {acc:.3f}")
 
-# ---------------------------------------------
-# 12. Make prediction on the latest data & explain it
-# ---------------------------------------------
+
+# ============================================================
+# 11. GENERATE FINAL PREDICTION
+# ============================================================
 print("\n\n====================")
-print("   MODEL PREDICTION ")
+print("   MODEL PREDICTION")
 print("====================")
 
-# Generate probabilities + top indicators for each horizon
 latest_prediction = predict_and_explain(pipelines, X, top_n=12)
 
-print("\n\nFinal Prediction Output:")
+print("\nFinal Prediction Output:")
 print(latest_prediction)
-import json
-output_path = r"C:\Users\harte\Documents\goTutorial\internal\model_debug_report.html"
 
 with open("model_debug_report.html", "w") as f:
     f.write("<h1>Model Debug Report</h1>")

@@ -28,7 +28,6 @@ def _get_engine():
 
 def _load_local_sp500():
     """Load the packaged S&P 500 monthly CSV as a pandas DataFrame."""
-
     csv_path = Path(__file__).with_name("sp500_monthly.csv")
     df = pd.read_csv(csv_path)
     df["timestamp"] = pd.to_datetime(df["Date"]) + pd.offsets.MonthEnd(0)
@@ -38,14 +37,15 @@ def _load_local_sp500():
 
 def _normalize_sp500_monthly(df: pd.DataFrame, value_col: str = "sp500") -> pd.DataFrame:
     """Align raw SP500 rows to month-end without overwriting earlier history."""
-
     if df.empty:
         return pd.DataFrame(columns=["sp500"])
 
     aligned = df.copy()
     # Normalize timestamps to UTC then drop timezone info to avoid tz-aware
     # conversion errors when different sources (DB vs CSV) are combined.
-    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"], utc=True).dt.tz_convert(None)
+    aligned["timestamp"] = pd.to_datetime(aligned["timestamp"], utc=True).dt.tz_convert(
+        None
+    )
     aligned = aligned.rename(columns={value_col: "sp500"})
     aligned = aligned.set_index("timestamp").sort_index()
     aligned = aligned.resample("ME").last()
@@ -117,8 +117,12 @@ def _build_sample_indicators(spx_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _append_missing_macro_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure the returned indicator frame always includes the key macro set."""
+    """Ensure the returned indicator frame always includes the key macro set.
 
+    Uses KEY_INDICATORS from indicator_definitions as the "wish list", but
+    never overwrites real DB data. Any missing names that can be synthesized
+    from the S&P history are appended; others are simply left missing.
+    """
     if "name" not in df.columns:
         return df
 
@@ -141,7 +145,6 @@ def _append_missing_macro_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def load_indicator_data():
     """Load indicator data from the database or local CSV fallback."""
-
     engine = _get_engine()
     if engine:
         # Pull indicators from the dedicated table that already excludes S&P 500 rows
@@ -165,7 +168,6 @@ def load_sp500_from_db():
     Load SP500 from the database or the packaged CSV.
     Converts daily → monthly frequency like your script expected.
     """
-
     engine = _get_engine()
     sources = []
 

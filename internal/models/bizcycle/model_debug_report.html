@@ -1,70 +1,81 @@
 <h1>Model Debug Report</h1><h2>Prediction Output</h2><pre>{
-    "as_of": "2015-11-30T00:00:00",
     "cycle_1m": {
-        "predicted_phase": "Peak",
+        "predicted_phase": "Expansion",
         "probabilities": {
-            "Peak": 0.7834868446392592,
-            "Contraction": 0.13362247042808373,
-            "Expansion": 0.082890684932657
+            "Expansion": 0.8326207995414734,
+            "Peak": 0.09851865470409393,
+            "Contraction": 0.0688604861497879
         },
         "top_features": [
             {
-                "feature": "AvgHoursWorked_lag3",
-                "impact": 1031.6202351266093
+                "feature": "value_lag3",
+                "impact": 1.386599063873291
+            },
+            {
+                "feature": "value_lag1",
+                "impact": -0.743898868560791
+            },
+            {
+                "feature": "value",
+                "impact": 0.1647351086139679
             }
         ],
         "most_impactful_indicators": [
             {
-                "indicator": "AvgHoursWorked",
-                "aggregate_impact": 1031.6202351266093
+                "indicator": "value",
+                "impact": 0.8074353039264679
             }
         ]
     },
     "cycle_3m": {
-        "predicted_phase": "Peak",
+        "predicted_phase": "Expansion",
         "probabilities": {
-            "Peak": 0.9462448338590818,
-            "Expansion": 0.027531683486992847,
-            "Contraction": 0.026223482653925538
+            "Expansion": 0.6299715042114258,
+            "Peak": 0.28172850608825684,
+            "Contraction": 0.08829999715089798
         },
         "top_features": [
             {
-                "feature": "AvgHoursWorked_lag3",
-                "impact": 1.5363937032845696
+                "feature": "value_lag1",
+                "impact": -0.5749638676643372
             },
             {
-                "feature": "AvgHoursWorked_lag1",
-                "impact": 0.6619714229830943
-            },
-            {
-                "feature": "AvgHoursWorked",
-                "impact": 0.6057828555948965
+                "feature": "value",
+                "impact": 0.5651291012763977
             }
         ],
         "most_impactful_indicators": [
             {
-                "indicator": "AvgHoursWorked",
-                "aggregate_impact": 2.8041479818625605
+                "indicator": "value",
+                "impact": -0.009834766387939453
             }
         ]
     },
     "cycle_6m": {
         "predicted_phase": "Peak",
         "probabilities": {
-            "Peak": 0.8649512382009107,
-            "Contraction": 0.08317418089691994,
-            "Expansion": 0.05187458090216942
+            "Peak": 0.9689452052116394,
+            "Expansion": 0.021910328418016434,
+            "Contraction": 0.00914444774389267
         },
         "top_features": [
             {
-                "feature": "AvgHoursWorked",
-                "impact": 805.9145727905828
+                "feature": "value_lag1",
+                "impact": -1.3525639772415161
+            },
+            {
+                "feature": "value_lag3",
+                "impact": 0.5771937966346741
+            },
+            {
+                "feature": "value",
+                "impact": 0.412920206785202
             }
         ],
         "most_impactful_indicators": [
             {
-                "indicator": "AvgHoursWorked",
-                "aggregate_impact": 805.9145727905828
+                "indicator": "value",
+                "impact": -0.36244997382164
             }
         ]
     }
