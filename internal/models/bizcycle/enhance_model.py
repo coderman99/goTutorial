@@ -1,8 +1,10 @@
 # enhance_model.py
+import importlib
 import joblib
 import numpy as np
 import os
 import pandas as pd
+from sklearn.decomposition import PCA
 from sklearn.feature_selection import mutual_info_classif
 from sklearn.metrics import accuracy_score
 from sklearn.preprocessing import LabelEncoder
@@ -105,8 +107,32 @@ def make_features(wide, base_lags=(1, 3)):
     if leak_cols:
         X = X.drop(columns=leak_cols)
 
+    # Rate-of-change (ROC) features capture short-term momentum in each indicator
+    roc_windows = (1, 3, 6)
+    roc_suffixes = tuple(f"roc{w}" for w in roc_windows)
+    roc_frames = []
+    for window in roc_windows:
+        roc = X.pct_change(periods=window)
+        roc.columns = [f"{c}_roc{window}" for c in X.columns]
+        roc_frames.append(roc)
+
     # Standardize each series (Z-score) to put them on comparable scales
     X = (X - X.mean()) / X.std(ddof=0)
+    if roc_frames:
+        standardized_roc = []
+        for frame in roc_frames:
+            frame_std = (frame - frame.mean()) / frame.std(ddof=0)
+            standardized_roc.append(frame_std)
+        X = pd.concat([X] + standardized_roc, axis=1)
+
+    # Compress extremely wide indicator sets to a smaller latent representation
+    base_indicator_cols = [c for c in X.columns if not c.endswith(roc_suffixes)]
+    if len(base_indicator_cols) > 100:
+        compressed = _reduce_dimensionality(
+            X[base_indicator_cols],
+            target_components=min(64, len(base_indicator_cols) // 2),
+        )
+        X = pd.concat([compressed, X.drop(columns=base_indicator_cols)], axis=1)
 
     # Add a few simple lags for each feature
     lagged_frames = []
@@ -120,6 +146,72 @@ def make_features(wide, base_lags=(1, 3)):
 
     X = X.dropna(how="all")
     return X
+
+
+def _reduce_dimensionality(X_df, target_components=50):
+    """Compress high-dimensional indicator sets using PCA with optional autoencoder boost."""
+
+    X_filled = X_df.ffill().bfill()
+    X_filled = X_filled.dropna(axis=0, how="any")
+
+    if X_filled.empty:
+        return X_df
+
+    target_components = max(1, min(target_components, X_filled.shape[1]))
+
+    autoencoded = _autoencode_features(X_filled, bottleneck=target_components)
+    if autoencoded is not None:
+        return autoencoded
+
+    n_components = min(target_components, X_filled.shape[0], X_filled.shape[1])
+    if n_components < 1:
+        return X_df
+
+    pca = PCA(n_components=n_components, random_state=42)
+    transformed = pca.fit_transform(X_filled)
+    component_names = [f"pca_component_{i+1}" for i in range(transformed.shape[1])]
+    return pd.DataFrame(transformed, index=X_filled.index, columns=component_names)
+
+
+def _autoencode_features(X_df, bottleneck=32, epochs=20, batch_size=32, random_state=42):
+    """Try to learn a compact latent representation using a lightweight autoencoder.
+
+    Returns a DataFrame of encoded features, or ``None`` when TensorFlow is not available.
+    """
+
+    tf_spec = importlib.util.find_spec("tensorflow")
+    if tf_spec is None:
+        return None
+
+    tensorflow = importlib.import_module("tensorflow")
+    keras = tensorflow.keras
+
+    tensorflow.random.set_seed(random_state)
+
+    input_dim = X_df.shape[1]
+    bottleneck = max(1, min(bottleneck, input_dim))
+    hidden_dim = max(bottleneck * 2, bottleneck + 8)
+
+    inputs = keras.Input(shape=(input_dim,))
+    encoded = keras.layers.Dense(hidden_dim, activation="relu")(inputs)
+    bottleneck_layer = keras.layers.Dense(bottleneck, activation="linear", name="bottleneck")(encoded)
+    decoded = keras.layers.Dense(hidden_dim, activation="relu")(bottleneck_layer)
+    outputs = keras.layers.Dense(input_dim, activation="linear")(decoded)
+
+    autoencoder = keras.Model(inputs, outputs)
+    autoencoder.compile(optimizer="adam", loss="mse")
+    autoencoder.fit(
+        X_df.values,
+        X_df.values,
+        epochs=epochs,
+        batch_size=batch_size,
+        verbose=0,
+    )
+
+    encoder = keras.Model(inputs, bottleneck_layer)
+    encoded_features = encoder.predict(X_df.values, verbose=0)
+    columns = [f"ae_component_{i+1}" for i in range(encoded_features.shape[1])]
+    return pd.DataFrame(encoded_features, index=X_df.index, columns=columns)
 
 
 def _screen_features_by_importance(X, y, max_features=60, min_score=0.0):
